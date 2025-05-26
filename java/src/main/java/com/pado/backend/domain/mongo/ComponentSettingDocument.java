@@ -19,7 +19,7 @@ public class ComponentSettingDocument {
     private String id;
 
     private Long componentId; // CHECKLIST 스프링 내부에서 컴포넌트를 구분할 때 사용하므로 Long 타입
-    // settingJson 내부에는 "ComponentId": "spring-001" 같은 필드가 있음
-    // 이걸 꺼내서 gRPC 요청에 setComponentId("spring-001") 식으로 넘김
+    // settingJson 내부에는 "ComponentId" 필드가 있음
+    // 이걸 꺼내서 gRPC 요청에 setComponentId("ComponentId") 이런 식으로 넘김
     private String settingJson;
 }

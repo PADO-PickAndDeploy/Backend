@@ -33,12 +33,12 @@ public class DeploymentController {
         return ResponseEntity.ok(new DefaultResponseDto("배포가 시작되었습니다."));
     }
 
-    @PostMapping("/restart")
-    @Operation(summary = "배포 재시작")
-    public ResponseEntity<DefaultResponseDto> restartDeployment(@PathVariable Long projectId) {
-        deploymentService.restartDeployment(projectId);
-        return ResponseEntity.ok(new DefaultResponseDto("배포가 재시작되었습니다."));
-    }
+    // @PostMapping("/restart")
+    // @Operation(summary = "배포 재시작")
+    // public ResponseEntity<DefaultResponseDto> restartDeployment(@PathVariable Long projectId) {
+    //     deploymentService.restartDeployment(projectId);
+    //     return ResponseEntity.ok(new DefaultResponseDto("배포가 재시작되었습니다."));
+    // }
 
     @PostMapping("/stop")
     @Operation(summary = "배포 중지")
@@ -72,10 +72,10 @@ public class DeploymentController {
     }
 
 
-    @GetMapping("/logs")
-    @Operation(summary = "배포 로그 스트리밍")
-    public SseEmitter streamDeploymentLogs(@PathVariable Long projectId) {
-        return deploymentService.streamDeploymentLogs(projectId);
-    }
+    // @GetMapping("/logs")
+    // @Operation(summary = "배포 로그 스트리밍")
+    // public SseEmitter streamDeploymentLogs(@PathVariable Long projectId) {
+    //     return deploymentService.streamDeploymentLogs(projectId);
+    // }
 }
 

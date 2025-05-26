@@ -20,7 +20,7 @@ import org.springframework.data.annotation.Id;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @AllArgsConstructor
 @Builder
-// TODO : 컴포넌트 상태 변경시에 계속 몽고디비에 저장시켜 놔야한다. 그래야 최신 상태를 갖다가 쓰지
+// TODO : 필드 고민, timestamp -> updatedAt을 사용하여 status 변경 시 자동 감지, 변경
 public class ComponentStatusDocument {
 
     @Id
@@ -28,8 +28,9 @@ public class ComponentStatusDocument {
 
     // 공통 필드
     private String componentId; // CHECKLIST Go에게 전달할 때 사용하는 ID라서 타입이 String
-    private String parentComponentId;
+    private String projectId;
     private String deploymentId;
     private ComponentStatus status;
-    private LocalDateTime timestamp;
+    // [ ] :  @UpdatedAt 같은걸로 변경해서 자동으로 Audit 가능하도록
+    private LocalDateTime updatedAt;
 }

@@ -14,7 +14,6 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-// [ ] : 어떤 필드를 작성해야할지, 연관 관계는 아마 필요 없을 거 같은데
 public class ComponentMeta {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

@@ -163,7 +163,7 @@ public class ProjectService {
 
     private ComponentStatus determineComponentStatus(Component component) {
         return componentStatusRepository
-                .findTopByComponentIdOrderByTimestampDesc(component.getComponentId().toString())
+                .findLatestStatus(component.getComponentId().toString())
                 .map(ComponentStatusDocument::getStatus)
                 .orElse(ComponentStatus.DRAFT);
     }
