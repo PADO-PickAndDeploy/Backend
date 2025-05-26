@@ -86,7 +86,7 @@ class ProjectServiceTest {
 
             when(projectRepository.findById(projectId)).thenReturn(Optional.of(project));
             when(componentRepository.findByProject(project)).thenReturn(List.of(component));
-            when(componentStatusRepository.findTopByComponentIdOrderByTimestampDesc(anyString()))
+            when(componentStatusRepository.findLatestStatus(anyString()))
                 .thenReturn(Optional.of(ComponentStatusDocument.builder().status(ComponentStatus.RUNNING).build()));
 
             assertThatThrownBy(() -> projectService.deleteProject(userId, projectId))
@@ -160,7 +160,7 @@ class ProjectServiceTest {
             // when
             when(projectRepository.findById(projectId)).thenReturn(Optional.of(project));
             when(componentRepository.findByProject(project)).thenReturn(List.of(component));
-            when(componentStatusRepository.findTopByComponentIdOrderByTimestampDesc("10"))
+            when(componentStatusRepository.findLatestStatus("10"))
                     .thenReturn(Optional.of(ComponentStatusDocument.builder()
                             .status(ComponentStatus.RUNNING)
                             .build()));

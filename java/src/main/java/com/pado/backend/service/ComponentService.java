@@ -17,6 +17,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pado.backend.domain.Component;
 import com.pado.backend.domain.ComponentLink;
+import com.pado.backend.domain.ComponentMeta;
 import com.pado.backend.domain.Project;
 import com.pado.backend.domain.mongo.ComponentSettingDocument;
 import com.pado.backend.domain.mongo.ComponentStatusDocument;
@@ -40,6 +41,7 @@ import com.pado.backend.global.exception.ProjectNotFoundException;
 import com.pado.backend.global.exception.UnauthorizedComponentAccessException;
 import com.pado.backend.global.type.ComponentStatus;
 import com.pado.backend.repository.ComponentLinkRepository;
+import com.pado.backend.repository.ComponentMetaRepository;
 import com.pado.backend.repository.ComponentRepository;
 import com.pado.backend.repository.ProjectRepository;
 import com.pado.backend.repository.mongo.ComponentSettingRepository;
@@ -55,35 +57,39 @@ public class ComponentService {
     private final ComponentLinkRepository componentLinkRepository;
     private final ComponentStatusRepository componentStatusRepository;
     private final ProjectRepository projectRepository;
-
+    private final ComponentMetaRepository componentMetaRepository;
     // Mongo
     private final ComponentSettingRepository componentSettingRepository;
 
-    /*
-    컴포넌트 종류 조회
-    ComponentTypeDto 클래스 만들기
-    */ 
+    // 컴포넌트 종류 조회
     public List<ComponentTypeDto> getComponentTypes() {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'getComponentTypes'");
+        return componentMetaRepository.findAll().stream()
+        .map(meta -> new ComponentTypeDto(meta.getSubtype(), meta.getThumbnail()))
+        .collect(Collectors.toList());
     }
-    
-    
-    // [ ] : 컴포넌트 검색 
-    // public List<ComponentSearchDto> searchComponents(String keyword) {
-        
 
+    
+    // [x] : 컴포넌트 검색 
+    public List<ComponentSearchDto> searchComponents(String keyword) {
+        List<ComponentMeta> componentMetas;
 
-    //     return matched.stream()
-    //     .map(component -> new ComponentSearchDto(
-    //         new ComponentTemplate(
-    //             component.getType(),
-    //             component.getSubtype(),
-    //             component.getThumbnail()
-    //         )
-    //     ))
-    //     .collect(Collectors.toList());
-    // }
+        if (keyword == null) {
+            // null이면 전체 조회
+            componentMetas = componentMetaRepository.findAll();
+        } else if (keyword.trim().isEmpty()) {
+            // 공백 문자열이면 명시적 방어: 빈 리스트 반환
+            return List.of();
+        } else {
+            // keyword가 입력되었을 경우 type 또는 subtype에서 검색
+            componentMetas = componentMetaRepository.searchByKeyword(keyword);
+        }
+
+        return componentMetas.stream()
+            .map(meta -> new ComponentSearchDto(
+                new ComponentTemplate(meta.getType(), meta.getSubtype(), meta.getThumbnail())
+            ))
+            .collect(Collectors.toList());
+    }
 
     // 컴포넌트 배치
     // TODO :createdAt, updatedAt 자동화(Audit)
@@ -126,7 +132,7 @@ public class ComponentService {
         .componentId(saved.getComponentId().toString())
         .deploymentId(null) // 아직 배포 전이므로 null 또는 "" 가능
         .status(ComponentStatus.DRAFT)
-        .timestamp(LocalDateTime.now())
+        .updatedAt(LocalDateTime.now())
         .build();
         componentStatusRepository.save(statusDoc);
 
@@ -212,7 +218,7 @@ public class ComponentService {
             .componentId(componentId.toString()) // 상태 추적용은 문자열로 저장
             .deploymentId(deploymentId)
             .status(ComponentStatus.START)
-            .timestamp(LocalDateTime.now())
+            .updatedAt(LocalDateTime.now())
             .build();
         componentStatusRepository.save(statusDoc);
 
@@ -220,20 +226,35 @@ public class ComponentService {
         return new DefaultResponseDto("설정 적용 완료");
     }
 
-
     // 컴포넌트 연결
     public void connectComponent(Long projectId, Long componentId, ComponentConnectDto request) {
         // TODO Auto-generated method stub
         throw new UnsupportedOperationException("Unimplemented method 'connectComponent'");
     }
 
-    // 컴포넌트 서비스 접속
+    // TODO : 컴포넌트 서비스 접속 , 일단 제외하고 배포, 생성부터
     public ComponentServiceUrlDto getComponentServiceUrl(Long projectId, Long componentId) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'getComponentServiceUrl'");
+        
+        // 1. Component 조회
+        Component component = componentRepository.findById(componentId)
+        .orElseThrow(ComponentNotFoundException::new);
+
+        // 2. Go에게 넘기는 형식의 componentId는 String (예: "102")
+        String componentIdForGo = component.getComponentId().toString();
+
+        // 3. 최신 상태 조회
+        ComponentStatus status = componentStatusRepository.findLatestStatus(componentIdForGo)
+            .map(ComponentStatusDocument::getStatus)
+            .orElse(ComponentStatus.ERROR);
+
+        // TODO : url 구성 어떻게 할건지 생각
+        // 4. URL 구성 (예: http://102.pado.local)
+        String url = "http://" + componentIdForGo + ".pado.local";
+
+        return new ComponentServiceUrlDto(url, status.name());
     }
 
-    // 배치된 컴포넌트 검색
+    // [x] : 배치된 컴포넌트 검색
     public List<ComponentSearchDto> searchDeployedComponents(Long projectId, String keyword) {
         List<Component> components;
 
@@ -258,10 +279,36 @@ public class ComponentService {
             .collect(Collectors.toList());
     }
 
-    // 개별 컴포넌트 상태 조회
+    // [ ] : 개별 컴포넌트 상태 조회
     public SseEmitter getComponentStatus(Long projectId, Long componentId) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'getComponentStatus'");
+        SseEmitter emitter = new SseEmitter(10 * 60 * 1000L); // 10분 지속 연결
+
+        Runnable task = () -> {
+            try {
+                String componentIdStr = componentId.toString();
+
+                // 일정 간격으로 상태 체크 (예: 3초마다)
+                while (true) {
+                    ComponentStatus status = componentStatusRepository.findLatestStatus(componentIdStr)
+                        .map(ComponentStatusDocument::getStatus)
+                        .orElse(ComponentStatus.ERROR);
+
+                    emitter.send(SseEmitter.event()
+                        .name("component-status")
+                        .data(status.name())
+                        .id(componentIdStr)
+                        .reconnectTime(3000));
+
+                    Thread.sleep(3000); // 3초 대기 후 재송신
+                }
+            } catch (Exception e) {
+                emitter.completeWithError(e);
+            }
+        };
+
+        new Thread(task).start();
+
+        return emitter;
     }
 
     // 서비스 로그 모니터링
@@ -290,8 +337,8 @@ public class ComponentService {
 
         1. 링크 없음 : 해당 컴포넌트만 삭제
         2. 링크 존재 : 링크 삭제 + 해당 컴포넌트 삭제 (연결된 상대 컴포넌트는 유지)
-
        [ ] : 실제 배포된 리소스가 있다면 → AWS/클러스터 등 외부 자원도 삭제해야 함 (지금은 생략해도 무방)
+       [ ] : 관련된 모든 DB 정보 삭제도 필요할듯? MySQL, MongoDB에 기록되어 있던
      */
     @Transactional
     public DefaultResponseDto deleteComponent(Long projectId, Long componentId) {
@@ -306,7 +353,7 @@ public class ComponentService {
 
         //  MongoDB에서 최신 상태 조회
         Optional<ComponentStatusDocument> componentStatus =
-            componentStatusRepository.findTopByComponentIdOrderByTimestampDesc(componentId.toString());
+            componentStatusRepository.findLatestStatus(componentId.toString());
 
         // 상태가 RUNNING이면 예외(연결된 컴포넌트 제외, 삭제하려는 컴포넌트만)
         if (componentStatus.isPresent() && componentStatus.get().getStatus() == ComponentStatus.RUNNING) {

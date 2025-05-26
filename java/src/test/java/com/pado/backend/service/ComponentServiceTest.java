@@ -19,23 +19,23 @@ import org.mockito.MockitoAnnotations;
 
 import com.pado.backend.domain.Component;
 import com.pado.backend.domain.ComponentLink;
+import com.pado.backend.domain.ComponentMeta;
 import com.pado.backend.domain.Project;
-import com.pado.backend.domain.User;
 import com.pado.backend.domain.mongo.ComponentSettingDocument;
 import com.pado.backend.domain.mongo.ComponentStatusDocument;
 import com.pado.backend.dto.request.ComponentCreateRequestDto;
 import com.pado.backend.dto.request.ComponentSettingDto;
 import com.pado.backend.dto.response.ComponentInfo;
 import com.pado.backend.dto.response.ComponentSearchDto;
+import com.pado.backend.dto.response.ComponentServiceUrlDto;
+import com.pado.backend.dto.response.ComponentTypeDto;
 import com.pado.backend.dto.response.ComponentDetailDto;
 import com.pado.backend.dto.response.DefaultResponseDto;
-import com.pado.backend.dto.response.ProjectDetailResponseDto;
 import com.pado.backend.global.type.ComponentStatus;
-import com.pado.backend.global.type.ProjectStatus;
 import com.pado.backend.repository.ComponentLinkRepository;
+import com.pado.backend.repository.ComponentMetaRepository;
 import com.pado.backend.repository.ComponentRepository;
 import com.pado.backend.repository.ProjectRepository;
-import com.pado.backend.repository.UserRepository;
 import com.pado.backend.repository.mongo.ComponentSettingRepository;
 import com.pado.backend.repository.mongo.ComponentStatusRepository;
 
@@ -54,6 +54,9 @@ class ComponentServiceTest {
     @Mock
     private ComponentLinkRepository componentLinkRepository;
 
+    @Mock
+    private ComponentMetaRepository componentMetaRepository;
+
     // Mongo
     @Mock
     private ComponentStatusRepository componentStatusRepository;
@@ -66,6 +69,83 @@ class ComponentServiceTest {
         MockitoAnnotations.openMocks(this);
     }
 
+    // ==============================
+    // [컴포넌트 종류 조회]
+    // ==============================
+    @Test
+    void getComponentTypes_정상조회시_DTO리스트반환된다() {
+        // given
+        when(componentMetaRepository.findAll()).thenReturn(List.of(
+            ComponentMeta.builder().type("RESOURCE").subtype("EC2").thumbnail("ec2.png").build(),
+            ComponentMeta.builder().type("SERVICE").subtype("Spring").thumbnail("spring.png").build()
+        ));
+
+        // when
+        List<ComponentTypeDto> result = componentService.getComponentTypes();
+
+        // then
+        assertThat(result).hasSize(2);
+        assertThat(result)
+            .extracting("subtype")
+            .containsExactlyInAnyOrder("EC2", "Spring");
+
+        assertThat(result)
+            .extracting("thumbnail")
+            .containsExactlyInAnyOrder("ec2.png", "spring.png");
+
+        verify(componentMetaRepository, times(1)).findAll();
+    }
+
+    // ==============================
+    // [컴포넌트 검색]
+    // ==============================
+    @Test
+    void searchComponents_keyword_null_전체조회() {
+        // given
+        when(componentMetaRepository.findAll()).thenReturn(List.of(
+            ComponentMeta.builder().type("RESOURCE").subtype("EC2").thumbnail("ec2.png").build(),
+            ComponentMeta.builder().type("SERVICE").subtype("Spring").thumbnail("spring.png").build()
+        ));
+
+        // when
+        List<ComponentSearchDto> result = componentService.searchComponents(null);
+
+        // then
+        assertThat(result).hasSize(2);
+        assertThat(result)
+            .extracting(dto -> dto.getComponent().getSubtype())
+            .containsExactlyInAnyOrder("EC2", "Spring");
+    }
+
+    @Test
+    void searchComponents_keyword_blank_빈리스트반환() {
+        // when
+        List<ComponentSearchDto> result = componentService.searchComponents("   ");
+
+        // then
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    void searchComponents_keyword_입력시_검색수행() {
+        // given
+        String keyword = "MySQL";
+        when(componentMetaRepository.searchByKeyword(keyword)).thenReturn(List.of(
+            ComponentMeta.builder().type("SERVICE").subtype("MySQL").thumbnail("mysql.png").build()
+        ));
+
+        // when
+        List<ComponentSearchDto> result = componentService.searchComponents(keyword);
+
+        // then
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getComponent().getSubtype()).isEqualTo("MySQL");
+        assertThat(result.get(0).getComponent().getType()).isEqualTo("SERVICE");
+    }
+
+    // ==============================
+    // [컴포넌트 배치]
+    // ==============================
     @Test
     void createComponentToProject_부모컴포넌트에_두개의_SERVICE가_정상적으로_등록된다() {
         // given
@@ -160,6 +240,9 @@ class ComponentServiceTest {
         }
     }
 
+    // ==============================
+    // [배치된 컴포넌트 검색]
+    // ==============================
     @Test
     void searchDeployedComponents_keyword_null_전체조회() {
         // given
@@ -220,7 +303,9 @@ class ComponentServiceTest {
     }
 
 
-    
+    // ==============================
+    // [컴포넌트 설정 적용]
+    // ==============================
     @Test
     void applyComponentSetting_정상요청시_설정과상태가_저장된다() {
         // given
@@ -265,7 +350,43 @@ class ComponentServiceTest {
         assertThat(response.getMessage()).isEqualTo("설정 적용 완료");
     }
 
-    // 컴포넌트 삭제
+
+    // ==============================
+    // [컴포넌트 서비스 접속]
+    // ==============================
+    @Test
+    void getComponentServiceUrl_정상요청시_URL과상태반환() {
+        // given
+        Long projectId = 1L;
+        Long componentId = 102L;
+
+        Component component = Component.builder()
+            .componentId(componentId)
+            .type("SERVICE")
+            .subtype("Spring")
+            .build();
+
+        ComponentStatusDocument statusDoc = ComponentStatusDocument.builder()
+            .componentId("102")
+            .status(ComponentStatus.RUNNING)
+            .updatedAt(LocalDateTime.now())
+            .build();
+
+        when(componentRepository.findById(componentId)).thenReturn(Optional.of(component));
+        when(componentStatusRepository.findLatestStatus("102")).thenReturn(Optional.of(statusDoc));
+
+        // when
+        ComponentServiceUrlDto result = componentService.getComponentServiceUrl(projectId, componentId);
+
+        // then
+        assertThat(result.getServiceUrl()).isEqualTo("http://102.pado.local");
+        assertThat(result.getStatus()).isEqualTo("RUNNING");
+    }
+
+
+    // ==============================
+    // [컴포넌트 삭제]
+    // ==============================
     @Test
     void deleteComponent_링크포함_정상삭제된다() {
         // given
@@ -289,11 +410,11 @@ class ComponentServiceTest {
         ComponentStatusDocument dummyStatus = ComponentStatusDocument.builder()
             .componentId(String.valueOf(componentId))
             .status(ComponentStatus.DRAFT)
-            .timestamp(LocalDateTime.now())
+            .updatedAt(LocalDateTime.now())
             .build();
 
         when(componentRepository.findById(componentId)).thenReturn(Optional.of(component));
-        when(componentStatusRepository.findTopByComponentIdOrderByTimestampDesc(componentId.toString()))
+        when(componentStatusRepository.findLatestStatus(componentId.toString()))
             .thenReturn(Optional.of(dummyStatus));
 
         // when

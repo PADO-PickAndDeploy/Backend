@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package provision;
+
+option go_package = "proto/";
+
+service ProvisioningService {
+  rpc DestroyComponent(DeploymentRequest) returns (StatusResponse);
+  
+  rpc PlanDeploy(DeploymentRequest) returns (CostResponse);
+  rpc Deploy(DeploymentRequest) returns (stream DeployLog);
+  rpc StopDeploy(DeploymentRequest) returns (StatusResponse);
+}
+
+message EC2Request {
+    string InstanceType = 1;
+    string Region = 2;
+    string AMI = 3;
+    string InstanceName = 4;
+    repeated int32 OpenPorts = 5;
+    string AWSAccessKey = 6;
+    string AWSSecretKey = 7;
+    string ComponentId = 8;
+}
+
+message S3Request {
+    string BucketName = 1;
+    string Region = 2;
+    string AWSAccessKey = 3;
+    string AWSSecretKey = 4;
+    string ComponentId = 5;
+}
+
+message GitCredential {
+    string Id = 1;
+    string Key = 2;
+}
+
+message ReactRequest {
+    string ParentComponentId = 1;
+    GitCredential GitCredential = 2;
+    string ComponentId = 3;
+    string GitRepo = 4;
+}
+
+message MySQLRequest {
+    string MySQLRootPassword = 1;
+    string MySQLDatabase = 2;
+    string MySQLUser = 3;
+    string MySQLPassword = 4;
+    int32 Port = 5;
+    string ParentComponentId = 6;
+    string ComponentId = 7;
+}
+
+message SpringRequest {
+    string ParentComponentId = 1;
+    string GitRepo = 2;
+    int32 NginxPort = 3;
+    string BuildTool = 4;
+    string JDKVersion = 5;
+    map<string, string> Env = 6 ;
+    GitCredential GitCredential = 7;
+    int32 DockerPort = 8;
+    string ComponentId = 9;
+}
+
+message StartEC2SpringRequest {
+    EC2Request EC2 = 1;
+    SpringRequest Spring = 2;
+    string DeploymentId = 3;
+    bool first = 4;
+}
+
+message StartS3ReactRequest {
+    S3Request S3 = 1;
+    ReactRequest React = 2;
+    string DeploymentId = 3;
+    string ComponentId = 4;
+    bool first = 5;
+}
+
+message StartEC2MySQLRequest {
+    EC2Request EC2 = 1;
+    MySQLRequest MySQL = 2;
+    string DeploymentId = 3;
+    string ComponentId = 4;
+    bool first = 5;
+}
+
+message ComponentSpec {
+  oneof component {
+    EC2Request EC2 = 1;
+    S3Request S3 = 2;
+    SpringRequest Spring = 3;
+    MySQLRequest MySQL = 4;
+    ReactRequest React = 5;
+  }
+}
+
+message DeploymentRequest {
+    string DeploymentId = 1;
+    repeated ComponentSpec Components = 2;
+}
+
+message DeployLog {
+    string DeploymentId = 1;
+    string ComponentId = 2;
+    string log_line = 3;
+}
+
+message StatusResponse {
+    string status = 1;
+    map<string, string> data = 2;
+}
+
+message CostResponse {
+    string cost = 1;
+    map<string, string> data = 2;
+}
+
+message DeploymentId {
+    string DeploymentId = 1;
+}
+
+message ProvisionLog {
+    string ComponentId = 1;
+    string log_line = 2;
+}
