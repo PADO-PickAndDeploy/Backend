@@ -7,6 +7,10 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -60,6 +64,7 @@ public class ComponentService {
     private final ComponentMetaRepository componentMetaRepository;
     // Mongo
     private final ComponentSettingRepository componentSettingRepository;
+    private final ComponentStatusStoreService componentStatusStoreService;
 
     // 컴포넌트 종류 조회
     public List<ComponentTypeDto> getComponentTypes() {
@@ -127,14 +132,11 @@ public class ComponentService {
         // 컴포넌트 저장
         Component saved = componentRepository.save(component);
 
-        // 4. 상태 저장 (MongoDB)
-        ComponentStatusDocument statusDoc = ComponentStatusDocument.builder()
-        .componentId(saved.getComponentId().toString())
-        .deploymentId(null) // 아직 배포 전이므로 null 또는 "" 가능
-        .status(ComponentStatus.DRAFT)
-        .updatedAt(LocalDateTime.now())
-        .build();
-        componentStatusRepository.save(statusDoc);
+        // 4. 상태 저장 (MongoDB, 덮어쓰기)
+        componentStatusStoreService.upsert(
+            saved.getComponentId().toString(),
+            ComponentStatus.DRAFT
+        );
 
         // 5. 응답 DTO 생성
         ComponentInfo response;
@@ -214,13 +216,10 @@ public class ComponentService {
         }
 
         // 6. 상태 START로 저장 (Mongo)
-        ComponentStatusDocument statusDoc = ComponentStatusDocument.builder()
-            .componentId(componentId.toString()) // 상태 추적용은 문자열로 저장
-            .deploymentId(deploymentId)
-            .status(ComponentStatus.START)
-            .updatedAt(LocalDateTime.now())
-            .build();
-        componentStatusRepository.save(statusDoc);
+        componentStatusStoreService.upsert(
+            componentId.toString(),
+            ComponentStatus.START
+        );
 
         // 7. 응답 반환
         return new DefaultResponseDto("설정 적용 완료");
@@ -243,7 +242,7 @@ public class ComponentService {
         String componentIdForGo = component.getComponentId().toString();
 
         // 3. 최신 상태 조회
-        ComponentStatus status = componentStatusRepository.findLatestStatus(componentIdForGo)
+        ComponentStatus status = componentStatusRepository.findByComponentId(componentIdForGo)
             .map(ComponentStatusDocument::getStatus)
             .orElse(ComponentStatus.ERROR);
 
@@ -289,7 +288,7 @@ public class ComponentService {
 
                 // 일정 간격으로 상태 체크 (예: 3초마다)
                 while (true) {
-                    ComponentStatus status = componentStatusRepository.findLatestStatus(componentIdStr)
+                    ComponentStatus status = componentStatusRepository.findByComponentId(componentIdStr)
                         .map(ComponentStatusDocument::getStatus)
                         .orElse(ComponentStatus.ERROR);
 
@@ -353,7 +352,7 @@ public class ComponentService {
 
         //  MongoDB에서 최신 상태 조회
         Optional<ComponentStatusDocument> componentStatus =
-            componentStatusRepository.findLatestStatus(componentId.toString());
+            componentStatusRepository.findByComponentId(componentId.toString());
 
         // 상태가 RUNNING이면 예외(연결된 컴포넌트 제외, 삭제하려는 컴포넌트만)
         if (componentStatus.isPresent() && componentStatus.get().getStatus() == ComponentStatus.RUNNING) {

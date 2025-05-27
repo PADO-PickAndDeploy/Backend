@@ -2,10 +2,16 @@ package com.pado.backend.service;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Executor;
 
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -14,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pado.backend.domain.Component;
+import com.pado.backend.domain.Credential;
 import com.pado.backend.domain.Deployment;
 import com.pado.backend.domain.Project;
 import com.pado.backend.domain.mongo.ComponentSettingDocument;
@@ -22,10 +29,12 @@ import com.pado.backend.dto.response.ChargeEstimateDto;
 import com.pado.backend.dto.response.ChargeResultDto;
 import com.pado.backend.dto.response.CheckDto;
 import com.pado.backend.global.exception.CustomException;
+import com.pado.backend.global.exception.InvalidCredentialIdException;
 import com.pado.backend.global.exception.ProjectNotFoundException;
 import com.pado.backend.global.type.ComponentStatus;
 import com.pado.backend.repository.ComponentLinkRepository;
 import com.pado.backend.repository.ComponentRepository;
+import com.pado.backend.repository.CredentialRepository;
 import com.pado.backend.repository.DeploymentRepository;
 import com.pado.backend.repository.ProjectRepository;
 import com.pado.backend.repository.mongo.ComponentSettingRepository;
@@ -34,6 +43,10 @@ import com.pado.backend.repository.mongo.ComponentStatusRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 
 import lombok.RequiredArgsConstructor;
+
+// gRPC 관련 import - Spring Boot 3.x 호환 버전
+import net.devh.boot.grpc.client.inject.GrpcClient;
+
 import provision.Provisioning.ComponentSpec;
 import provision.Provisioning.DeploymentRequest;
 import provision.Provisioning.EC2Request;
@@ -52,32 +65,41 @@ public class DeploymentService {
     private final ComponentRepository componentRepository;
     private final ProjectRepository projectRepository;
     private final ComponentLinkRepository componentLinkRepository;
+    private final CredentialRepository credentialRepository;
 
+    // Mongo
     private final ComponentSettingRepository componentSettingRepository;
     private final ComponentStatusRepository componentStatusRepository;
+    private final ComponentStatusStoreService componentStatusStoreService;
 
     // gRPC
     private final ObjectMapper objectMapper;
     private final Executor deploymentExecutor;
-    private final ProvisioningServiceGrpc.ProvisioningServiceBlockingStub stub;
+
+    @GrpcClient("provisioning-service")
+    private ProvisioningServiceGrpc.ProvisioningServiceBlockingStub stub;
 
     @Transactional
     public SseEmitter startDeployment(Long projectId) {
-        SseEmitter emitter = new SseEmitter(30 * 60 * 1000L); // 30분 제한
+        SseEmitter emitter = new SseEmitter(30 * 60 * 1000L);
 
-        // 1. 프로젝트 조회
         Project project = projectRepository.findById(projectId)
             .orElseThrow(ProjectNotFoundException::new);
 
-        // 2. 컴포넌트 조회
         List<Component> components = componentRepository.findByProject(project);
 
-        // 3. 컴포넌트 상태 검증
-        // TODO : 지금은 컴포넌트의 상태가 START이지만 아마 READY가 추가될 수도 있음.
+        // 👉 상태 확인 로그 출력
+        components.forEach(component -> {
+            String id = component.getComponentId().toString();
+            Optional<ComponentStatusDocument> opt = componentStatusRepository.findByComponentId(id);
+            System.out.println("Component ID: " + id + ", Status Found: " +
+                opt.map(ComponentStatusDocument::getStatus).orElse(null));
+        }); // -> 제대로 나옴. 그런데도 실행 안되는 이유는? gRPC 요청 이전 단계에서 이미 실행이 중단되고 있다.
+    
+        // 기본 검증 로직
         boolean allStart = components.stream().allMatch(component ->
-            componentStatusRepository
-                .findLatestStatus(component.getComponentId().toString())
-                .map(status -> ComponentStatus.START.equals(status.getStatus()))
+            componentStatusRepository.findByComponentId(component.getComponentId().toString())
+                .map(doc -> ComponentStatus.START.equals(doc.getStatus()))
                 .orElse(false)
         );
 
@@ -87,14 +109,8 @@ public class DeploymentService {
             return emitter;
         }
 
-        /*
-            4. Deployment ID 생성
-            RDB의 deploymentId : DB의 기본키 역할
-            gRPC 전달용 String deploymentId : 외부 API / 로그 추적
-        */ 
         String deploymentId = "deploy-" + projectId + "-" + System.currentTimeMillis();
 
-        // 4.1 Deployment 엔티티 저장 (RDB)
         Deployment deployment = Deployment.builder()
             .project(project)
             .status("START")
@@ -102,64 +118,180 @@ public class DeploymentService {
             .build();
         deploymentRepository.save(deployment);
 
-        // 5. ComponentSetting → gRPC 메시지 변환
-        List<ComponentSpec> componentSpecs = components.stream()
-            .map(component -> {
+        List<ComponentSpec> componentSpecs = new ArrayList<>();
+
+        for (Component component : components) {
+            try {
                 ComponentSettingDocument settingDoc = componentSettingRepository.findByComponentId(component.getComponentId())
                     .orElseThrow(() -> new CustomException("ComponentId " + component.getComponentId() + " 의 설정 정보가 존재하지 않습니다.", HttpStatus.BAD_REQUEST));
-                return convertSettingJsonToComponentSpec(settingDoc.getSettingJson());
-            })
-            .toList();
 
-        // 6. gRPC 요청 생성
+                JsonNode root = objectMapper.readTree(settingDoc.getSettingJson());
+                String type = root.path("type").asText();
+                ComponentSpec spec = switch (type) {
+                    case "EC2" -> ComponentSpec.newBuilder().setEC2(convertToEC2(root)).build();
+                    case "MySQL" -> ComponentSpec.newBuilder().setMySQL(convertToMySQL(root)).build();
+                    case "Spring" -> ComponentSpec.newBuilder().setSpring(convertToSpring(root)).build();
+                    case "React" -> ComponentSpec.newBuilder().setReact(convertToReact(root)).build();
+                    case "S3" -> ComponentSpec.newBuilder().setS3(convertToS3(root)).build();
+                    default -> throw new IllegalArgumentException("지원하지 않는 컴포넌트 타입: " + type);
+                };
+                componentSpecs.add(spec);
+            } catch (Exception e) {
+                sendToEmitter(emitter, "deploy-error", "설정 파싱 실패: " + e.getMessage());
+                emitter.completeWithError(e);
+                return emitter;
+            }
+        }
+
         DeploymentRequest request = DeploymentRequest.newBuilder()
             .setDeploymentId(deploymentId)
             .addAllComponents(componentSpecs)
             .build();
 
-        // 7. 비동기 배포 실행 + 로그 스트리밍
         deploymentExecutor.execute(() -> {
             try {
-                stub.deploy(request).forEachRemaining(log -> {
-                    sendToEmitter(emitter, "deploy-log", log.getLogLine());
-                });
-
+                System.out.println(">>> Before gRPC call");
+                stub.deploy(request).forEachRemaining(log ->
+                    sendToEmitter(emitter, "deploy-log", log.getLogLine())
+                );
+                System.out.println(">>> After gRPC call");
                 sendToEmitter(emitter, "deploy-success", "배포가 성공적으로 완료되었습니다.");
                 emitter.complete();
 
-                // TODO: ComponentStatus → MongoDB에 RUNNING 상태로 반영 필요
-                components.forEach(component -> {
-                    ComponentStatusDocument updated = ComponentStatusDocument.builder()
-                        .componentId(component.getComponentId().toString())
-                        .deploymentId(deploymentId)
-                        .status(ComponentStatus.RUNNING)
-                        .updatedAt(LocalDateTime.now())
-                        .build();
-                    componentStatusRepository.save(updated);
-                });
+                components.forEach(component ->
+                    componentStatusStoreService.upsert(component.getComponentId().toString(), ComponentStatus.RUNNING)
+                );
 
-                // deployment.setStatus("RUNNING");
-                // deployment.setStopTime(LocalDateTime.now());
-                // deploymentRepository.save(deployment);
             } catch (Exception e) {
                 sendToEmitter(emitter, "deploy-fail", "배포 중 오류 발생: " + e.getMessage());
                 emitter.completeWithError(e);
 
-                // TODO: 실패한 경우 전체 Component 상태 ERROR 처리 필요
-                components.forEach(component -> {
-                    ComponentStatusDocument updated = ComponentStatusDocument.builder()
-                        .componentId(component.getComponentId().toString())
-                        .deploymentId(deploymentId)
-                        .status(ComponentStatus.ERROR)
-                        .updatedAt(LocalDateTime.now())
-                        .build();
-                    componentStatusRepository.save(updated);
-                });
+                components.forEach(component ->
+                    componentStatusStoreService.upsert(component.getComponentId().toString(), ComponentStatus.ERROR)
+                );
             }
         });
 
         return emitter;
     }
+
+    // @Transactional
+    // public SseEmitter startDeployment(Long projectId) {
+    //     SseEmitter emitter = new SseEmitter(30 * 60 * 1000L); // 30분 제한
+
+    //     // 1. 프로젝트 조회
+    //     Project project = projectRepository.findById(projectId)
+    //         .orElseThrow(ProjectNotFoundException::new);
+
+    //     // 2. 컴포넌트 조회
+    //     List<Component> components = componentRepository.findByProject(project);
+
+    //     // 3. 컴포넌트 상태 검증
+    //     // TODO : 지금은 컴포넌트의 상태가 START이지만 아마 READY가 추가될 수도 있음.
+    //     boolean allStart = components.stream().allMatch(component -> {
+    //         return componentStatusRepository
+    //             .findByComponentId(component.getComponentId().toString())
+    //             .map(doc -> ComponentStatus.START.equals(doc.getStatus()))
+    //             .orElse(false);
+    //     });
+
+    //     if (!allStart) {
+    //         sendToEmitter(emitter, "deploy-error", "START 상태가 아닌 컴포넌트가 존재합니다. 설정을 확인해주세요.");
+    //         emitter.complete();
+    //         return emitter;
+    //     }
+
+    //     /*
+    //         4. Deployment ID 생성
+    //         RDB의 deploymentId : DB의 기본키 역할
+    //         gRPC 전달용 String deploymentId : 외부 API / 로그 추적
+    //     */ 
+    //     String deploymentId = "deploy-" + projectId + "-" + System.currentTimeMillis();
+
+    //     // 4.1 Deployment 엔티티 저장 (RDB)
+    //     Deployment deployment = Deployment.builder()
+    //         .project(project)
+    //         .status("START")
+    //         .startTime(LocalDateTime.now())
+    //         .build();
+    //     deploymentRepository.save(deployment);
+
+    //     ComponentSpec.Builder builder = ComponentSpec.newBuilder();
+
+    //     for (Component component : components) {
+    //         ComponentSettingDocument settingDoc = componentSettingRepository.findByComponentId(component.getComponentId())
+    //             .orElseThrow(() -> new CustomException("ComponentId " + component.getComponentId() + " 의 설정 정보가 존재하지 않습니다.", HttpStatus.BAD_REQUEST));
+
+    //         JsonNode root = objectMapper.readTree(settingDoc.getSettingJson());
+    //         String type = root.path("type").asText();
+
+    //         switch (type) {
+    //             case "EC2" -> builder.setEC2(convertToEC2(root));
+    //             case "MySQL" -> builder.setMySQL(convertToMySQL(root));
+    //             case "Spring" -> builder.setSpring(convertToSpring(root));
+    //             case "React" -> builder.setReact(convertToReact(root));
+    //             case "S3" -> builder.setS3(convertToS3(root));
+    //             default -> throw new IllegalArgumentException("지원하지 않는 컴포넌트 타입: " + type);
+    //         }
+    //     }
+
+    //     List<ComponentSpec> componentSpecs = List.of(builder.build());
+
+    //     DeploymentRequest request = DeploymentRequest.newBuilder()
+    //         .setDeploymentId(deploymentId)
+    //         .addAllComponents(componentSpecs) // 길이 1의 리스트
+    //         .build();
+
+
+    //     // // 5. ComponentSetting → gRPC 메시지 변환
+    //     // List<ComponentSpec> componentSpecs = components.stream()
+    //     //     .map(component -> {
+    //     //         ComponentSettingDocument settingDoc = componentSettingRepository.findByComponentId(component.getComponentId())
+    //     //             .orElseThrow(() -> new CustomException("ComponentId " + component.getComponentId() + " 의 설정 정보가 존재하지 않습니다.", HttpStatus.BAD_REQUEST));
+    //     //         return convertSettingJsonToComponentSpec(settingDoc.getSettingJson());
+    //     //     })
+    //     //     .toList();
+
+    //     // // 6. gRPC 요청 생성
+    //     // DeploymentRequest request = DeploymentRequest.newBuilder()
+    //     //     .setDeploymentId(deploymentId)
+    //     //     .addAllComponents(componentSpecs)
+    //     //     .build();
+
+    //     // 7. 비동기 배포 실행 + 로그 스트리밍
+    //     deploymentExecutor.execute(() -> {
+    //         try {
+    //             stub.deploy(request).forEachRemaining(log -> {
+    //                 sendToEmitter(emitter, "deploy-log", log.getLogLine());
+    //             });
+
+    //             sendToEmitter(emitter, "deploy-success", "배포가 성공적으로 완료되었습니다.");
+    //             emitter.complete();
+
+    //             // TODO: ComponentStatus → MongoDB에 RUNNING 상태로 반영 필요
+    //             components.forEach(component -> {
+    //                 componentStatusStoreService.upsert(
+    //                     component.getComponentId().toString(),
+    //                     ComponentStatus.RUNNING
+    //                 );
+    //             });
+
+    //         } catch (Exception e) {
+    //             sendToEmitter(emitter, "deploy-fail", "배포 중 오류 발생: " + e.getMessage());
+    //             emitter.completeWithError(e);
+
+    //             // TODO: 실패한 경우 전체 Component 상태 ERROR 처리 필요
+    //             components.forEach(component -> {
+    //                 componentStatusStoreService.upsert(
+    //                     component.getComponentId().toString(),
+    //                     ComponentStatus.ERROR
+    //                 );
+    //             });
+    //         }
+    //     });
+
+    //     return emitter;
+    // }
 
 
 
@@ -205,8 +337,9 @@ public class DeploymentService {
     private ComponentSpec convertSettingJsonToComponentSpec(String settingJson) {
         try {
             JsonNode root = objectMapper.readTree(settingJson);
+            String type = root.path("type").asText();
     
-            String type = root.path("type").asText();  // 예: "EC2", "Spring", ...
+            ComponentSpec.Builder builder = ComponentSpec.newBuilder();
     
             switch (type) {
                 case "EC2" -> {
@@ -215,13 +348,15 @@ public class DeploymentService {
                         .setRegion(root.path("Region").asText())
                         .setAMI(root.path("AMI").asText())
                         .setInstanceName(root.path("InstanceName").asText())
-                        .addAllOpenPorts(objectMapper.convertValue(root.path("OpenPorts"), new TypeReference<List<Integer>>() {}))
+                        .addAllOpenPorts(objectMapper.convertValue(
+                            root.path("OpenPorts"), new TypeReference<List<Integer>>() {}))
                         .setAWSAccessKey(root.path("AWSAccessKey").asText())
                         .setAWSSecretKey(root.path("AWSSecretKey").asText())
                         .setComponentId(root.path("ComponentId").asText())
                         .build();
-                    return ComponentSpec.newBuilder().setEC2(ec2).build();
+                    builder.setEC2(ec2);
                 }
+    
                 case "MySQL" -> {
                     MySQLRequest mysql = MySQLRequest.newBuilder()
                         .setMySQLRootPassword(root.path("MySQLRootPassword").asText())
@@ -232,44 +367,50 @@ public class DeploymentService {
                         .setParentComponentId(root.path("ParentComponentId").asText())
                         .setComponentId(root.path("ComponentId").asText())
                         .build();
-                    return ComponentSpec.newBuilder().setMySQL(mysql).build();
+                    builder.setMySQL(mysql);
                 }
-                case "Spring" -> {
-                    Map<String, String> env = objectMapper.convertValue(
-                        root.path("Env"), new TypeReference<Map<String, String>>() {}
-                    );
-                    SpringRequest spring = SpringRequest.newBuilder()
-                        .setParentComponentId(root.path("ParentComponentId").asText())
-                        .setGitRepo(root.path("GitRepo").asText())
-                        .setNginxPort(root.path("NginxPort").asInt())
-                        .setBuildTool(root.path("BuildTool").asText())
-                        .setJDKVersion(root.path("JDKVersion").asText())
-                        .putAllEnv(env)
-                        .setDockerPort(root.path("DockerPort").asInt())
-                        .setComponentId(root.path("ComponentId").asText())
-                        .setGitCredential(
-                            GitCredential.newBuilder()
-                                .setId(root.path("GitCredential").path("Id").asText())
-                                .setKey(root.path("GitCredential").path("Key").asText())
-                                .build()
-                        )
+    
+                case "Spring", "React" -> {
+                    JsonNode gitNode = root.path("GitCredential");
+                    String idText = gitNode.path("Id").asText();
+                    String keyText = gitNode.path("Key").asText();
+    
+                    if (idText == null || idText.isBlank()) {
+                        throw new CustomException("GitCredential ID가 비어 있습니다.", HttpStatus.BAD_REQUEST);
+                    }
+    
+                    Long credentialId = Long.parseLong(idText);
+                    Credential credential = credentialRepository.findById(credentialId)
+                        .orElseThrow(InvalidCredentialIdException::new);
+    
+                    GitCredential gitCredential = GitCredential.newBuilder()
+                        .setId(idText)
+                        .setKey(keyText)
                         .build();
-                    return ComponentSpec.newBuilder().setSpring(spring).build();
+    
+                    if (type.equals("Spring")) {
+                        SpringRequest spring = SpringRequest.newBuilder()
+                            .setParentComponentId(root.path("ParentComponentId").asText())
+                            .setGitRepo(root.path("GitRepo").asText())
+                            .setNginxPort(root.path("NginxPort").asInt())
+                            .setBuildTool(root.path("BuildTool").asText())
+                            .setJDKVersion(root.path("JDKVersion").asText())
+                            .setDockerPort(root.path("DockerPort").asInt())
+                            .setComponentId(root.path("ComponentId").asText())
+                            .setGitCredential(gitCredential)
+                            .build();
+                        builder.setSpring(spring);
+                    } else {
+                        ReactRequest react = ReactRequest.newBuilder()
+                            .setParentComponentId(root.path("ParentComponentId").asText())
+                            .setGitRepo(root.path("GitRepo").asText())
+                            .setComponentId(root.path("ComponentId").asText())
+                            .setGitCredential(gitCredential)
+                            .build();
+                        builder.setReact(react);
+                    }
                 }
-                case "React" -> {
-                    ReactRequest react = ReactRequest.newBuilder()
-                        .setParentComponentId(root.path("ParentComponentId").asText())
-                        .setGitRepo(root.path("GitRepo").asText())
-                        .setComponentId(root.path("ComponentId").asText())
-                        .setGitCredential(
-                            GitCredential.newBuilder()
-                                .setId(root.path("GitCredential").path("Id").asText())
-                                .setKey(root.path("GitCredential").path("Key").asText())
-                                .build()
-                        )
-                        .build();
-                    return ComponentSpec.newBuilder().setReact(react).build();
-                }
+    
                 case "S3" -> {
                     S3Request s3 = S3Request.newBuilder()
                         .setBucketName(root.path("BucketName").asText())
@@ -278,15 +419,19 @@ public class DeploymentService {
                         .setAWSSecretKey(root.path("AWSSecretKey").asText())
                         .setComponentId(root.path("ComponentId").asText())
                         .build();
-                    return ComponentSpec.newBuilder().setS3(s3).build();
+                    builder.setS3(s3);
                 }
+    
                 default -> throw new IllegalArgumentException("지원하지 않는 컴포넌트 타입: " + type);
             }
+    
+            return builder.build();
     
         } catch (Exception e) {
             throw new RuntimeException("gRPC ComponentSpec 변환 실패", e);
         }
     }
+    
 
     private void sendToEmitter(SseEmitter emitter, String eventName, String data) {
         try {
@@ -295,5 +440,114 @@ public class DeploymentService {
             emitter.completeWithError(e);
         }
     }
+
+    private EC2Request convertToEC2(JsonNode root) {
+        return EC2Request.newBuilder()
+            .setInstanceType(root.path("InstanceType").asText())
+            .setRegion(root.path("Region").asText())
+            .setAMI(root.path("AMI").asText())
+            .setInstanceName(root.path("InstanceName").asText())
+            .addAllOpenPorts(objectMapper.convertValue(
+                root.path("OpenPorts"), new TypeReference<List<Integer>>() {}))
+            .setAWSAccessKey(root.path("AWSAccessKey").asText())
+            .setAWSSecretKey(root.path("AWSSecretKey").asText())
+            .setComponentId(root.path("ComponentId").asText())
+            .build();
+    }
+
+    private MySQLRequest convertToMySQL(JsonNode root) {
+        return MySQLRequest.newBuilder()
+            .setMySQLRootPassword(root.path("MySQLRootPassword").asText())
+            .setMySQLDatabase(root.path("MySQLDatabase").asText())
+            .setMySQLUser(root.path("MySQLUser").asText())
+            .setMySQLPassword(root.path("MySQLPassword").asText())
+            .setPort(root.path("Port").asInt())
+            .setParentComponentId(root.path("ParentComponentId").asText())
+            .setComponentId(root.path("ComponentId").asText())
+            .build();
+    }
+    
+    private S3Request convertToS3(JsonNode root) {
+        return S3Request.newBuilder()
+            .setBucketName(root.path("BucketName").asText())
+            .setRegion(root.path("Region").asText())
+            .setAWSAccessKey(root.path("AWSAccessKey").asText())
+            .setAWSSecretKey(root.path("AWSSecretKey").asText())
+            .setComponentId(root.path("ComponentId").asText())
+            .build();
+    }
+    
+    private SpringRequest convertToSpring(JsonNode root) {
+        JsonNode gitNode = root.path("GitCredential");
+        String idText = gitNode.path("Id").asText();
+        String keyText = gitNode.path("Key").asText();
+    
+        if (idText == null || idText.isBlank()) {
+            throw new CustomException("GitCredential ID가 비어 있습니다.", HttpStatus.BAD_REQUEST);
+        }
+    
+        Long credentialId = Long.parseLong(idText);
+        Credential credential = credentialRepository.findById(credentialId)
+            .orElseThrow(InvalidCredentialIdException::new);
+    
+        GitCredential gitCredential = GitCredential.newBuilder()
+            .setId(idText)
+            .setKey(keyText)
+            .build();
+    
+        return SpringRequest.newBuilder()
+            .setParentComponentId(root.path("ParentComponentId").asText())
+            .setGitRepo(root.path("GitRepo").asText())
+            .setNginxPort(root.path("NginxPort").asInt())
+            .setBuildTool(root.path("BuildTool").asText())
+            .setJDKVersion(root.path("JDKVersion").asText())
+            .setDockerPort(root.path("DockerPort").asInt())
+            .setComponentId(root.path("ComponentId").asText())
+            .setGitCredential(gitCredential)
+            .build();
+    }
+    
+    private ReactRequest convertToReact(JsonNode root) {
+        JsonNode gitNode = root.path("GitCredential");
+        String idText = gitNode.path("Id").asText();
+        String keyText = gitNode.path("Key").asText();
+    
+        if (idText == null || idText.isBlank()) {
+            throw new CustomException("GitCredential ID가 비어 있습니다.", HttpStatus.BAD_REQUEST);
+        }
+    
+        Long credentialId = Long.parseLong(idText);
+        Credential credential = credentialRepository.findById(credentialId)
+            .orElseThrow(InvalidCredentialIdException::new);
+    
+        GitCredential gitCredential = GitCredential.newBuilder()
+            .setId(idText)
+            .setKey(keyText)
+            .build();
+    
+        return ReactRequest.newBuilder()
+            .setParentComponentId(root.path("ParentComponentId").asText())
+            .setGitRepo(root.path("GitRepo").asText())
+            .setComponentId(root.path("ComponentId").asText())
+            .setGitCredential(gitCredential)
+            .build();
+    }
+    
+    private GitCredential extractGitCredential(JsonNode root) {
+        JsonNode gitNode = root.path("GitCredential");
+        String idText = gitNode.path("Id").asText();
+        String keyText = gitNode.path("Key").asText();
+
+        if (idText == null || idText.isBlank()) {
+            throw new CustomException("GitCredential ID가 비어 있습니다.", HttpStatus.BAD_REQUEST);
+        }
+
+        Long credentialId = Long.parseLong(idText);
+        credentialRepository.findById(credentialId)
+            .orElseThrow(InvalidCredentialIdException::new);
+
+        return GitCredential.newBuilder().setId(idText).setKey(keyText).build();
+    }
+
 }
 

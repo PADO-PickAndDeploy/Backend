@@ -1,5 +1,6 @@
 package com.pado.backend.repository.mongo;
 
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.mongodb.repository.MongoRepository;
@@ -16,6 +17,6 @@ public interface ComponentStatusRepository extends MongoRepository<ComponentStat
     ComponentStatusDocument의 필드에 userId도 추가해야 할까?
     userId, projectId, componentId를 이용하면 탐색 속도가 빨라질까?
     */ 
-    @Query(value = "{ 'componentId' : ?0 }", sort = "{ 'updatedAt' : -1 }")
-    Optional<ComponentStatusDocument> findLatestStatus(String componentId);
+    @Query(value = "{ 'componentId': ?0 }")
+    Optional<ComponentStatusDocument> findByComponentId(String componentId);
 }
