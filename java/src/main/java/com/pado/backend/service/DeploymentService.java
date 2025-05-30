@@ -48,6 +48,7 @@ import lombok.RequiredArgsConstructor;
 import net.devh.boot.grpc.client.inject.GrpcClient;
 
 import provision.Provisioning.ComponentSpec;
+import provision.Provisioning.CostResponse;
 import provision.Provisioning.DeploymentRequest;
 import provision.Provisioning.EC2Request;
 import provision.Provisioning.GitCredential;
@@ -79,7 +80,6 @@ public class DeploymentService {
     @GrpcClient("provisioning-service")
     private ProvisioningServiceGrpc.ProvisioningServiceBlockingStub stub;
 
-    @Transactional
     public SseEmitter startDeployment(Long projectId) {
         SseEmitter emitter = new SseEmitter(30 * 60 * 1000L);
 
@@ -109,14 +109,16 @@ public class DeploymentService {
             return emitter;
         }
 
-        String deploymentId = "deploy-" + projectId + "-" + System.currentTimeMillis();
-
+        // TODO : 배포의 상태도 Enum으로 설정?
         Deployment deployment = Deployment.builder()
             .project(project)
-            .status("START")
+            .status("RUNNING")
             .startTime(LocalDateTime.now())
             .build();
         deploymentRepository.save(deployment);
+
+        final String deploymentId = "deploy-" + projectId + "-" + deployment.getDeploymentId();
+
 
         List<ComponentSpec> componentSpecs = new ArrayList<>();
 
@@ -147,6 +149,22 @@ public class DeploymentService {
             .setDeploymentId(deploymentId)
             .addAllComponents(componentSpecs)
             .build();
+
+        // PlanDeploy 선 호출
+        try {
+            System.out.println(">>> BEFORE PlanDeploy");
+            CostResponse costResponse = stub.planDeploy(request);
+            System.out.println(">>> AFTER PlanDeploy");
+            System.out.println("예상 비용: " + costResponse.getCost());
+            // 필요시 SSE로 예상 비용 전달
+            sendToEmitter(emitter, "deploy-plan", "예상 비용: " + costResponse.getCost());
+        } catch (Exception e) {
+            e.printStackTrace();
+            sendToEmitter(emitter, "deploy-fail", "PlanDeploy 실패: " + e.getMessage());
+            emitter.completeWithError(e);
+            return emitter;
+        }
+
 
         deploymentExecutor.execute(() -> {
             try {
@@ -301,16 +319,88 @@ public class DeploymentService {
     //     // 컴포넌트 하나라도 죽으면 전체 실행 불가로 MVP를 만들거라 MVP에서는 구현하지 않을 예정
     // }
 
+    @Transactional
     public void stopDeployment(Long projectId) {
-        // TODO: 실제 배포 중지 로직 구현
+        // 1. 프로젝트 조회
+        Project project = projectRepository.findById(projectId)
+            .orElseThrow(ProjectNotFoundException::new);
+
+        // TODO : 2. "실행 중인 배포" 조회 (명확한 상태 필터링 필요)
+        Deployment deployment = deploymentRepository.findByProjectAndStatus(project, "RUNNING")
+            .orElseThrow(() -> new CustomException("실행 중인 배포가 없습니다.", HttpStatus.BAD_REQUEST));
+
+        String deploymentId = "deploy-" + projectId + "-" + deployment.getDeploymentId();
+
+        // 3. 프로젝트 내 컴포넌트 조회
+        List<Component> components = componentRepository.findByProject(project);
+
+        if (components.isEmpty()) {
+            throw new CustomException("중단할 컴포넌트가 없습니다.", HttpStatus.BAD_REQUEST);
+        }
+
+        // 4. ComponentSpec 생성
+        List<ComponentSpec> componentSpecs = new ArrayList<>();
+        for (Component component : components) {
+            ComponentSettingDocument settingDoc = componentSettingRepository.findByComponentId(component.getComponentId())
+                .orElseThrow(() -> new CustomException("설정 누락: " + component.getComponentId(), HttpStatus.BAD_REQUEST));
+
+            try {
+                JsonNode root = objectMapper.readTree(settingDoc.getSettingJson());
+                String type = root.path("type").asText();
+
+                ComponentSpec spec = switch (type) {
+                    case "EC2" -> ComponentSpec.newBuilder().setEC2(convertToEC2(root)).build();
+                    case "S3" -> ComponentSpec.newBuilder().setS3(convertToS3(root)).build();
+                    case "Spring" -> ComponentSpec.newBuilder().setSpring(convertToSpring(root)).build();
+                    case "React" -> ComponentSpec.newBuilder().setReact(convertToReact(root)).build();
+                    case "MySQL" -> ComponentSpec.newBuilder().setMySQL(convertToMySQL(root)).build();
+                    default -> throw new IllegalArgumentException("지원하지 않는 타입: " + type);
+                };
+
+                componentSpecs.add(spec);
+
+            } catch (Exception e) {
+                throw new CustomException("설정 파싱 오류: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+            }
+        }
+
+        // 5. gRPC 요청 전송
+        DeploymentRequest request = DeploymentRequest.newBuilder()
+            .setDeploymentId(deploymentId)
+            .addAllComponents(componentSpecs)
+            .build();
+
+        try {
+            stub.stopDeploy(request); // 예외 발생 시 catch
+            for (Component component : components) {
+                componentStatusStoreService.upsert(component.getComponentId().toString(), ComponentStatus.START);
+            }
+            
+            deployment.markAsStart(LocalDateTime.now());
+            deploymentRepository.save(deployment);
+        
+        } catch (Exception e) {
+            // 실패한 경우 전체를 ERROR로 간주
+            for (Component component : components) {
+                componentStatusStoreService.upsert(component.getComponentId().toString(), ComponentStatus.ERROR);
+            }
+
+            deployment.markAsError(LocalDateTime.now());
+            deploymentRepository.save(deployment);
+
+            throw new CustomException("배포 중단 실패: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+        }
     }
+
+
+
 
     public CheckDto checkDeploymentPreconditions(Long projectId) {
         // TODO: 사전 체크 로직 구현
         return null;
     }
 
-    public ChargeEstimateDto estimateCharge(Long projectId) {
+    public ChargeEstimateDto planDeployment(Long projectId) {
         // TODO: 예상 요금 계산 로직 구현
         return null;
     }
@@ -442,6 +532,8 @@ public class DeploymentService {
     }
 
     private EC2Request convertToEC2(JsonNode root) {
+        String rawComponentId = root.path("ComponentId").asText(); // main.tf.tpl에서 숫자 먼저 사용하지 않으려고
+
         return EC2Request.newBuilder()
             .setInstanceType(root.path("InstanceType").asText())
             .setRegion(root.path("Region").asText())
@@ -451,33 +543,40 @@ public class DeploymentService {
                 root.path("OpenPorts"), new TypeReference<List<Integer>>() {}))
             .setAWSAccessKey(root.path("AWSAccessKey").asText())
             .setAWSSecretKey(root.path("AWSSecretKey").asText())
-            .setComponentId(root.path("ComponentId").asText())
+            .setComponentId("comp-" + rawComponentId) // main.tf.tpl에서 숫자 먼저 사용하지 않으려고
             .build();
     }
 
     private MySQLRequest convertToMySQL(JsonNode root) {
+        String rawComponentId = root.path("ComponentId").asText();
+
         return MySQLRequest.newBuilder()
             .setMySQLRootPassword(root.path("MySQLRootPassword").asText())
             .setMySQLDatabase(root.path("MySQLDatabase").asText())
             .setMySQLUser(root.path("MySQLUser").asText())
             .setMySQLPassword(root.path("MySQLPassword").asText())
             .setPort(root.path("Port").asInt())
-            .setParentComponentId(root.path("ParentComponentId").asText())
-            .setComponentId(root.path("ComponentId").asText())
+            .setParentComponentId("comp-" + root.path("ParentComponentId").asText()) 
+            .setComponentId("comp-" + rawComponentId)  
             .build();
     }
     
     private S3Request convertToS3(JsonNode root) {
+        String rawComponentId = root.path("ComponentId").asText();
+        String deploymentId = root.path("DeploymentId").asText(); // 409 BucketAlreadyExists 해결, S3는 글로벌 고유 
+
         return S3Request.newBuilder()
-            .setBucketName(root.path("BucketName").asText())
+            .setBucketName("pado-" + deploymentId + "-" + rawComponentId) // 409 BucketAlreadyExists 해결, S3는 글로벌 고유 
             .setRegion(root.path("Region").asText())
             .setAWSAccessKey(root.path("AWSAccessKey").asText())
             .setAWSSecretKey(root.path("AWSSecretKey").asText())
-            .setComponentId(root.path("ComponentId").asText())
+            .setComponentId("comp-" + rawComponentId) 
             .build();
     }
     
     private SpringRequest convertToSpring(JsonNode root) {
+        String rawComponentId = root.path("ComponentId").asText();
+
         JsonNode gitNode = root.path("GitCredential");
         String idText = gitNode.path("Id").asText();
         String keyText = gitNode.path("Key").asText();
@@ -496,18 +595,20 @@ public class DeploymentService {
             .build();
     
         return SpringRequest.newBuilder()
-            .setParentComponentId(root.path("ParentComponentId").asText())
+            .setParentComponentId("comp-" + root.path("ParentComponentId").asText())
             .setGitRepo(root.path("GitRepo").asText())
             .setNginxPort(root.path("NginxPort").asInt())
             .setBuildTool(root.path("BuildTool").asText())
             .setJDKVersion(root.path("JDKVersion").asText())
             .setDockerPort(root.path("DockerPort").asInt())
-            .setComponentId(root.path("ComponentId").asText())
+            .setComponentId("comp-" + rawComponentId)
             .setGitCredential(gitCredential)
             .build();
     }
     
     private ReactRequest convertToReact(JsonNode root) {
+        String rawComponentId = root.path("ComponentId").asText();
+
         JsonNode gitNode = root.path("GitCredential");
         String idText = gitNode.path("Id").asText();
         String keyText = gitNode.path("Key").asText();
@@ -526,9 +627,9 @@ public class DeploymentService {
             .build();
     
         return ReactRequest.newBuilder()
-            .setParentComponentId(root.path("ParentComponentId").asText())
+            .setParentComponentId("comp-" + root.path("ParentComponentId").asText())
             .setGitRepo(root.path("GitRepo").asText())
-            .setComponentId(root.path("ComponentId").asText())
+            .setComponentId("comp-" + rawComponentId)
             .setGitCredential(gitCredential)
             .build();
     }

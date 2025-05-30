@@ -65,7 +65,7 @@ public class DeploymentController {
     @GetMapping("/charge")
     @Operation(summary = "예상 요금 조회")
     public ResponseEntity<ChargeEstimateDto> estimateCharge(@PathVariable Long projectId) {
-        return ResponseEntity.ok(deploymentService.estimateCharge(projectId));
+        return ResponseEntity.ok(deploymentService.planDeployment(projectId));
     }
 
     @GetMapping("/estimate")

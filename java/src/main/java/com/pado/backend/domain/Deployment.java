@@ -34,4 +34,24 @@ public class Deployment {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id")
     private Project project;
+
+    // RUNNING에서 배포 중단 성공적으로 한 경우
+    public void markAsStart(LocalDateTime now) {
+        this.status = "START";
+        this.stopTime = now;
+    }
+
+    // RUNNING에서 배포 중단 실패한 경우
+    public void markAsError(LocalDateTime now) {
+        this.status = "ERROR";
+        this.stopTime = now;
+    }
+
+    public void markAsRunning(LocalDateTime now) {
+        this.status = "RUNNING";
+        this.startTime = now;
+        this.stopTime = now;
+    }
+
 }
+
