@@ -25,13 +25,14 @@ public class Credential {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long credentialId;
 
-    private String credentialName;
+    private String credentialName; // 크리덴셜 이름 사용자 정의
 
-    private String credentialData;
+    // TODO : JSON 형식으로 accessKey, secretKey 다 담을지, 아니면 필드를 두개 나누어 각자 담을지
+    private String credentialData; // 실제 키 
 
-    private String credentialType;
+    private String credentialType; // AWS, Git -> 프론트에서 AWS, Git, Custom 클릭 시에 결정
 
-    private String credentialDescription;
+    private String credentialDescription; // 크리덴셜 정보 사용자 정의
 
     private LocalDateTime createdAt;
 

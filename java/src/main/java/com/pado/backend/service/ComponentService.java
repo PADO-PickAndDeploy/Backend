@@ -7,6 +7,11 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -18,6 +23,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pado.backend.domain.Component;
 import com.pado.backend.domain.ComponentLink;
 import com.pado.backend.domain.ComponentMeta;
+import com.pado.backend.domain.Credential;
 import com.pado.backend.domain.Project;
 import com.pado.backend.domain.mongo.ComponentSettingDocument;
 import com.pado.backend.domain.mongo.ComponentStatusDocument;
@@ -43,6 +49,7 @@ import com.pado.backend.global.type.ComponentStatus;
 import com.pado.backend.repository.ComponentLinkRepository;
 import com.pado.backend.repository.ComponentMetaRepository;
 import com.pado.backend.repository.ComponentRepository;
+import com.pado.backend.repository.CredentialRepository;
 import com.pado.backend.repository.ProjectRepository;
 import com.pado.backend.repository.mongo.ComponentSettingRepository;
 import com.pado.backend.repository.mongo.ComponentStatusRepository;
@@ -53,13 +60,16 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class ComponentService {
 
+    private final CredentialRepository credentialRepository;
     private final ComponentRepository componentRepository;
     private final ComponentLinkRepository componentLinkRepository;
     private final ComponentStatusRepository componentStatusRepository;
     private final ProjectRepository projectRepository;
     private final ComponentMetaRepository componentMetaRepository;
+
     // Mongo
     private final ComponentSettingRepository componentSettingRepository;
+    private final ComponentStatusStoreService componentStatusStoreService;
 
     // 컴포넌트 종류 조회
     public List<ComponentTypeDto> getComponentTypes() {
@@ -127,14 +137,11 @@ public class ComponentService {
         // 컴포넌트 저장
         Component saved = componentRepository.save(component);
 
-        // 4. 상태 저장 (MongoDB)
-        ComponentStatusDocument statusDoc = ComponentStatusDocument.builder()
-        .componentId(saved.getComponentId().toString())
-        .deploymentId(null) // 아직 배포 전이므로 null 또는 "" 가능
-        .status(ComponentStatus.DRAFT)
-        .updatedAt(LocalDateTime.now())
-        .build();
-        componentStatusRepository.save(statusDoc);
+        // 4. 상태 저장 (MongoDB, 덮어쓰기)
+        componentStatusStoreService.upsert(
+            saved.getComponentId().toString(),
+            ComponentStatus.DRAFT
+        );
 
         // 5. 응답 DTO 생성
         ComponentInfo response;
@@ -195,15 +202,25 @@ public class ComponentService {
             throw new ComponentProjectMismatchException();
         }
 
-       // 4. 컴포넌트 설정 저장 (MongoDB - 나중에 배포 시 사용됨)
-        ComponentSettingDocument settingDocument = new ComponentSettingDocument(
-            null, // id는 MongoDB에서 자동 생성
-            componentId,
-            request.getSettingJson()
-        );
+        // 4. Credential 유효성 검사
+        Long credentialId = request.getCredentialId();
+        if (credentialId == null) {
+            throw new CustomException("Credential ID는 필수입니다.", HttpStatus.BAD_REQUEST);
+        }
+
+        // 5. 실제 Credential 엔티티가 DB에 존재하는지 확인
+        Credential credential = credentialRepository.findById(credentialId)
+            .orElseThrow(() -> new CustomException("해당 Credential이 존재하지 않습니다.", HttpStatus.NOT_FOUND));
+
+        // 6. 컴포넌트 설정 저장 (MongoDB - 나중에 배포 시 사용됨)
+        ComponentSettingDocument settingDocument = ComponentSettingDocument.builder()
+            .componentId(componentId)
+            .credentialId(request.getCredentialId())
+            .settingJson(request.getSettingJson())
+            .build();
         componentSettingRepository.save(settingDocument);
 
-        // 5. 설정 JSON 내부에서 DeploymentId 추출 (상태 기록용)
+        // 7. 설정 JSON 내부에서 DeploymentId 추출 (상태 기록용)
         ObjectMapper objectMapper = new ObjectMapper();
         String deploymentId;
         try {
@@ -213,16 +230,13 @@ public class ComponentService {
             throw new InvalidJsonFormatException();
         }
 
-        // 6. 상태 START로 저장 (Mongo)
-        ComponentStatusDocument statusDoc = ComponentStatusDocument.builder()
-            .componentId(componentId.toString()) // 상태 추적용은 문자열로 저장
-            .deploymentId(deploymentId)
-            .status(ComponentStatus.START)
-            .updatedAt(LocalDateTime.now())
-            .build();
-        componentStatusRepository.save(statusDoc);
+        // 8. 상태 START로 저장 (Mongo)
+        componentStatusStoreService.upsert(
+            componentId.toString(),
+            ComponentStatus.START
+        );
 
-        // 7. 응답 반환
+        // 9. 응답 반환
         return new DefaultResponseDto("설정 적용 완료");
     }
 
@@ -243,7 +257,7 @@ public class ComponentService {
         String componentIdForGo = component.getComponentId().toString();
 
         // 3. 최신 상태 조회
-        ComponentStatus status = componentStatusRepository.findLatestStatus(componentIdForGo)
+        ComponentStatus status = componentStatusRepository.findByComponentId(componentIdForGo)
             .map(ComponentStatusDocument::getStatus)
             .orElse(ComponentStatus.ERROR);
 
@@ -289,7 +303,7 @@ public class ComponentService {
 
                 // 일정 간격으로 상태 체크 (예: 3초마다)
                 while (true) {
-                    ComponentStatus status = componentStatusRepository.findLatestStatus(componentIdStr)
+                    ComponentStatus status = componentStatusRepository.findByComponentId(componentIdStr)
                         .map(ComponentStatusDocument::getStatus)
                         .orElse(ComponentStatus.ERROR);
 
@@ -353,7 +367,7 @@ public class ComponentService {
 
         //  MongoDB에서 최신 상태 조회
         Optional<ComponentStatusDocument> componentStatus =
-            componentStatusRepository.findLatestStatus(componentId.toString());
+            componentStatusRepository.findByComponentId(componentId.toString());
 
         // 상태가 RUNNING이면 예외(연결된 컴포넌트 제외, 삭제하려는 컴포넌트만)
         if (componentStatus.isPresent() && componentStatus.get().getStatus() == ComponentStatus.RUNNING) {

@@ -18,19 +18,22 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 
+import org.springframework.http.MediaType;
+
 @RestController
-@RequestMapping("/projects/{project_id}/deploy")
+@RequestMapping("/projects/{projectId}/deploy")
 @RequiredArgsConstructor
 @Tag(name = "Deployment", description = "배포 관리 API")
 public class DeploymentController {
 
     private final DeploymentService deploymentService;
 
-    @PostMapping("/start")
+    // CHECKLIST : 로그 까지 합쳐져서 SseEmitter를 반환해야한다.
+    @PostMapping(value = "/start", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @Operation(summary = "배포 시작")
-    public ResponseEntity<DefaultResponseDto> startDeployment(@PathVariable Long projectId) {
-        deploymentService.startDeployment(projectId);
-        return ResponseEntity.ok(new DefaultResponseDto("배포가 시작되었습니다."));
+    public SseEmitter startDeployment(@PathVariable Long projectId) {
+        System.out.println(">>> /api/deploy 호출됨");
+        return deploymentService.startDeployment(projectId);
     }
 
     // @PostMapping("/restart")
@@ -59,13 +62,13 @@ public class DeploymentController {
         return ResponseEntity.ok(deploymentService.checkDeploymentPreconditions(projectId));
     }
 
-    @GetMapping("/{projectId}/charge")
+    @GetMapping("/charge")
     @Operation(summary = "예상 요금 조회")
     public ResponseEntity<ChargeEstimateDto> estimateCharge(@PathVariable Long projectId) {
-        return ResponseEntity.ok(deploymentService.estimateCharge(projectId));
+        return ResponseEntity.ok(deploymentService.planDeployment(projectId));
     }
 
-    @GetMapping("/{projectId}/estimate")
+    @GetMapping("/estimate")
     @Operation(summary = "실제 요금 조회")
     public ResponseEntity<ChargeResultDto> getCharge(@PathVariable Long projectId) {
         return ResponseEntity.ok(deploymentService.getCharge(projectId));
