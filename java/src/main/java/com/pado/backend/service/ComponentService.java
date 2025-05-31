@@ -11,6 +11,7 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -22,6 +23,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pado.backend.domain.Component;
 import com.pado.backend.domain.ComponentLink;
 import com.pado.backend.domain.ComponentMeta;
+import com.pado.backend.domain.Credential;
 import com.pado.backend.domain.Project;
 import com.pado.backend.domain.mongo.ComponentSettingDocument;
 import com.pado.backend.domain.mongo.ComponentStatusDocument;
@@ -47,6 +49,7 @@ import com.pado.backend.global.type.ComponentStatus;
 import com.pado.backend.repository.ComponentLinkRepository;
 import com.pado.backend.repository.ComponentMetaRepository;
 import com.pado.backend.repository.ComponentRepository;
+import com.pado.backend.repository.CredentialRepository;
 import com.pado.backend.repository.ProjectRepository;
 import com.pado.backend.repository.mongo.ComponentSettingRepository;
 import com.pado.backend.repository.mongo.ComponentStatusRepository;
@@ -57,11 +60,13 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class ComponentService {
 
+    private final CredentialRepository credentialRepository;
     private final ComponentRepository componentRepository;
     private final ComponentLinkRepository componentLinkRepository;
     private final ComponentStatusRepository componentStatusRepository;
     private final ProjectRepository projectRepository;
     private final ComponentMetaRepository componentMetaRepository;
+
     // Mongo
     private final ComponentSettingRepository componentSettingRepository;
     private final ComponentStatusStoreService componentStatusStoreService;
@@ -197,15 +202,25 @@ public class ComponentService {
             throw new ComponentProjectMismatchException();
         }
 
-       // 4. 컴포넌트 설정 저장 (MongoDB - 나중에 배포 시 사용됨)
-        ComponentSettingDocument settingDocument = new ComponentSettingDocument(
-            null, // id는 MongoDB에서 자동 생성
-            componentId,
-            request.getSettingJson()
-        );
+        // 4. Credential 유효성 검사
+        Long credentialId = request.getCredentialId();
+        if (credentialId == null) {
+            throw new CustomException("Credential ID는 필수입니다.", HttpStatus.BAD_REQUEST);
+        }
+
+        // 5. 실제 Credential 엔티티가 DB에 존재하는지 확인
+        Credential credential = credentialRepository.findById(credentialId)
+            .orElseThrow(() -> new CustomException("해당 Credential이 존재하지 않습니다.", HttpStatus.NOT_FOUND));
+
+        // 6. 컴포넌트 설정 저장 (MongoDB - 나중에 배포 시 사용됨)
+        ComponentSettingDocument settingDocument = ComponentSettingDocument.builder()
+            .componentId(componentId)
+            .credentialId(request.getCredentialId())
+            .settingJson(request.getSettingJson())
+            .build();
         componentSettingRepository.save(settingDocument);
 
-        // 5. 설정 JSON 내부에서 DeploymentId 추출 (상태 기록용)
+        // 7. 설정 JSON 내부에서 DeploymentId 추출 (상태 기록용)
         ObjectMapper objectMapper = new ObjectMapper();
         String deploymentId;
         try {
@@ -215,13 +230,13 @@ public class ComponentService {
             throw new InvalidJsonFormatException();
         }
 
-        // 6. 상태 START로 저장 (Mongo)
+        // 8. 상태 START로 저장 (Mongo)
         componentStatusStoreService.upsert(
             componentId.toString(),
             ComponentStatus.START
         );
 
-        // 7. 응답 반환
+        // 9. 응답 반환
         return new DefaultResponseDto("설정 적용 완료");
     }
 

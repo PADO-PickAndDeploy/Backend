@@ -2,7 +2,11 @@ package com.pado.backend.domain;
 
 import java.time.LocalDateTime;
 
+import com.pado.backend.global.type.DeploymentStatus;
+
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -25,7 +29,8 @@ public class Deployment {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long deploymentId;
 
-    private String status;
+    @Enumerated(EnumType.STRING)
+    private DeploymentStatus status;
 
     private LocalDateTime startTime;
 
@@ -35,22 +40,20 @@ public class Deployment {
     @JoinColumn(name = "project_id")
     private Project project;
 
-    // RUNNING에서 배포 중단 성공적으로 한 경우
     public void markAsStart(LocalDateTime now) {
-        this.status = "START";
-        this.stopTime = now;
+        this.status = DeploymentStatus.START;
+        this.startTime = now;
+        this.stopTime = null;
     }
 
-    // RUNNING에서 배포 중단 실패한 경우
     public void markAsError(LocalDateTime now) {
-        this.status = "ERROR";
+        this.status = DeploymentStatus.ERROR;
         this.stopTime = now;
     }
 
     public void markAsRunning(LocalDateTime now) {
-        this.status = "RUNNING";
-        this.startTime = now;
-        this.stopTime = now;
+        this.status = DeploymentStatus.RUNNING;
+        this.stopTime = null;
     }
 
 }
