@@ -3,8 +3,14 @@ package com.pado.backend.domain;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+
 import jakarta.persistence.CascadeType;
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EntityListeners;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -23,7 +29,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @AllArgsConstructor
 @Builder
-// TODO : createdAt, updatedAt
+@EntityListeners(AuditingEntityListener.class)
 public class Component {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -34,7 +40,11 @@ public class Component {
     private String subtype;
     private String thumbnail;
 
+    @CreatedDate
+    @Column(updatable = false)
     private LocalDateTime createdAt;
+
+    @LastModifiedDate
     private LocalDateTime updatedAt;
 
     // N:1 관계 - 하나의 프로젝트에 여러 컴포넌트
