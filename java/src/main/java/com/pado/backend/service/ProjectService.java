@@ -42,14 +42,12 @@ public class ProjectService {
 
     @Transactional
     public ProjectResponseDto createProject(ProjectCreateRequestDto request, Long userId) {
-        LocalDateTime now = LocalDateTime.now(); // 초기 프로젝트 만들 때 createdAt, updatedAt 정확히 일치시키기 위함
+        
         User user = userRepository.findById(userId)
                 .orElseThrow(UserNotFoundException::new);
         Project project = Project.builder()
                 .projectName(request.getName())
                 .projectDescription(request.getDescription())
-                .createdAt(now)
-                .updatedAt(now) // [ ] : 현재 서비스에 프로젝트 수정이 따로 없는데 이건 언제 변경되는가? 일단 createdAt,updatedAt은 @LastModifiedBy 이런걸로 쓴다는 의미인듯 함.
                 .user(user) // [x] 파라미터에 userid가 들어가야하지 않나? 필요하다 크리덴셜 서비스 - 크리덴셜 생성 처럼 , DTO에 넣을거냐 엔드포인트에 넣을거냐
                 .build();
 

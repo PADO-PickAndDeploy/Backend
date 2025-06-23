@@ -102,7 +102,6 @@ public class ComponentService {
     }
 
     // 컴포넌트 배치
-    // TODO :createdAt, updatedAt 자동화(Audit)
     @Transactional
     public ComponentDetailDto createComponentToProject(Long projectId, ComponentCreateRequestDto request) {
         // 1. 프로젝트 조회
@@ -130,8 +129,6 @@ public class ComponentService {
             .thumbnail(info.getThumbnail())
             .project(project)
             .parentComponentId(parent)
-            .createdAt(LocalDateTime.now())
-            .updatedAt(LocalDateTime.now())
             .build();
 
         // 컴포넌트 저장

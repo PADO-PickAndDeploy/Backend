@@ -40,7 +40,6 @@ public class CredentialService {
                 .credentialType(request.getType())
                 .credentialDescription(request.getDescription())
                 .credentialData(request.getData())
-                .createdAt(LocalDateTime.now())
                 .user(user)
                 .build();
 
