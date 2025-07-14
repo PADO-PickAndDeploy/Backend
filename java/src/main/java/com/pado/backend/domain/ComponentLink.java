@@ -2,7 +2,12 @@ package com.pado.backend.domain;
 
 import java.time.LocalDateTime;
 
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EntityListeners;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
@@ -22,7 +27,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @AllArgsConstructor
 @Builder
-// TODO : createdAt
+@EntityListeners(AuditingEntityListener.class)
 public class ComponentLink {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -31,6 +36,9 @@ public class ComponentLink {
     @Enumerated(EnumType.STRING)
     private ConnectionType connectionType;
 
+    // [x] : createdAt
+    @CreatedDate
+    @Column(updatable = false)
     private LocalDateTime createdAt;
 
     // 연결 시작점 (from)

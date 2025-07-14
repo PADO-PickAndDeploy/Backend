@@ -3,6 +3,8 @@ package com.pado.backend.repository;
 import java.util.List;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import com.pado.backend.domain.Component;
@@ -16,4 +18,13 @@ import com.pado.backend.domain.ComponentLink;
 public interface ComponentLinkRepository extends JpaRepository<ComponentLink, Long>{
     List<ComponentLink> findByFromComponentId(Component component); 
     List<ComponentLink> findByToComponentId(Component component);   
+
+    // 특정 컴포넌트 간 연결 조회
+    @Query("SELECT cl FROM ComponentLink cl WHERE cl.fromComponentId =:fromComponent AND cl.toComponentId =:toComponent")
+    List<ComponentLink> findByFromComponentIdAndToComponentId(
+        @Param("fromComponent") Component fromComponent,
+        @Param("toComponent") Component tComponent
+    );
+
+
 }
