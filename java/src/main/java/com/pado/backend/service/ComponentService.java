@@ -55,9 +55,11 @@ import com.pado.backend.repository.mongo.ComponentSettingRepository;
 import com.pado.backend.repository.mongo.ComponentStatusRepository;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ComponentService {
 
     private final CredentialRepository credentialRepository;
@@ -238,9 +240,199 @@ public class ComponentService {
     }
 
     // 컴포넌트 연결
-    public void connectComponent(Long projectId, Long componentId, ComponentConnectDto request) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'connectComponent'");
+    @Transactional
+    public DefaultResponseDto connectComponent(Long projectId, Long componentId, ComponentConnectDto request) {
+        
+        // 1. 프로젝트 검증
+        Project project = projectRepository.findById(projectId)
+            .orElseThrow(ProjectNotFoundException::new);
+
+        // 2. 소스 컴포넌트 검증
+        Component fromComponent = componentRepository.findById(componentId)
+            .orElseThrow(ComponentNotFoundException::new);
+        
+        if (!fromComponent.getProject().getProjectId().equals(projectId)) {
+            throw new UnauthorizedComponentAccessException();
+        }
+
+        // 3. 타겟 컴포넌트 검증
+        Component toComponent = componentRepository.findById(request.getTargetComponentId())
+            .orElseThrow(ComponentNotFoundException::new);
+        
+        if (!toComponent.getProject().getProjectId().equals(projectId)) {
+            throw new UnauthorizedComponentAccessException();
+        }
+
+        // 4. 기존 링크 중복 체크
+        List<ComponentLink> existingLinks = componentLinkRepository.findByFromComponentId(fromComponent);
+        boolean linkExists = existingLinks.stream()
+            .anyMatch(link -> link.getToComponentId().getComponentId().equals(request.getTargetComponentId()));
+        
+        if (linkExists) {
+            return new DefaultResponseDto("이미 연결된 컴포넌트입니다.");
+        }
+
+        // 5. 연결 타입 결정
+        ComponentLink.ConnectionType connectionType = determineConnectionType(request.getConnectionType());
+
+        try {
+            // 6. 프로젝트 네트워크 생성(없으면)
+            dockerSwarmService.createProjectNetwork(projectId.toString());
+
+            // 7. Docker Swarm에서 컴포넌트 간 연결
+            dockerSwarmService.connectComponentInSwarm(
+                projectId.toString(), 
+                fromComponent, 
+                toComponent, 
+                connectionType
+            );
+
+            // 8. 데이터베이스에 링크 정보 저장
+            ComponentLink componentLink = ComponentLink.builder()
+                .fromComponentId(fromComponent)
+                .toComponentId(toComponent)
+                .connectionType(connectionType)
+                .build();
+
+            componentLinkRepository.save(componentLink);
+
+            // 9. 컴포넌트 설정 업데이트 (환경 변수 추가)
+            updateComponentEnvironmentVariables(fromComponent, toComponent, connectionType);
+
+            log.info("컴포넌트 연결 완료: {} -> {} (타입: {})",
+                componentId, request.getTargetComponentId(), connectionType);
+
+            return new DefaultResponseDto("컴포넌트 연결이 완료되었습니다.");
+        } catch (Exception e){
+            log.error("컴포넌트 연결 실패: {}", e.getMessage());
+            throw new CustomException("컴포넌트 연결 중 오류가 발생했습니다: " + e.getMessage(), 
+                                        HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    /*
+     * 특정 컴포넌트 간 연결 해제
+     */
+    @Transactional
+    public DefaultResponseDto disconnectSpecificComponent(Long projectId, Long fromComponentId, Long toComponentId) {
+        // 1. 프로젝트 및 컴포넌트 검증
+        Project project = projectRepository.findById(projectId)
+            .orElseThrow(ProjectNotFoundException::new);
+
+        Component fromComponent = componentRepository.findById(fromComponentId)
+            .orElseThrow(ComponentNotFoundException::new);
+        
+        Component toComponent = componentRepository.findById(toComponentId)
+            .orElseThrow(ComponentNotFoundException::new);
+        
+        // 프로젝트 소속 검증
+        if (!fromComponent.getProject().getProjectId().equals(projectId) ||
+            !toComponent.getProject().getProjectId().equals(projectId)) {
+            throw new UnauthorizedComponentAccessException();
+        }
+
+        try {
+            // 2. 특정 링크만 조회
+            List<ComponentLink> specificLinks = componentLinkRepository.findByFromComponentIdAndToComponentId(
+                fromComponent, toComponent);
+
+            if (specificLinks.isEmpty()) {
+                return new DefaultResponseDto("연결되지 않은 컴포넌트입니다.");
+            }
+
+            // 3. Docker Swarm에서 특정 연결만 해제
+            for (ComponentLink link : specificLinks) {
+                dockerSwarmService.disconnectComponentsInSwarm(
+                    projectId.toString(),
+                    fromComponent,
+                    toComponent
+                );
+            }
+
+            // 4. 데이터베이스에서 특정 링크만 삭제
+            componentLinkRepository.deleteAll(specificLinks);
+
+            // 5. 환경변수에서 해당 연결 정보만 제거
+            removeSpecificConnectionFromEnvironment(fromComponent, toComponent);
+
+            log.info("특정 컴포넌트 연결 해제 완료: {} -> {}", fromComponentId, toComponentId);
+
+            return new DefaultResponseDto("컴포넌트 연결 해제가 완료되었습니다.");
+
+        } catch (Exception e) {
+            log.error("특정 컴포넌트 연결 해제 실패: {}", e.getMessage());
+            throw new CustomException("컴포넌트 연결 해제 중 오류가 발생했습니다: " + e.getMessage(), 
+                                    HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    // 컴포넌트 연결 해제
+    @Transactional
+    public DefaultResponseDto disconnect(Long projectId, Long componentId) {
+        
+        // 1. 프로젝트 및 컴포넌트 검증
+        Project project = projectRepository.findById(projectId)
+        .orElseThrow(ProjectNotFoundException::new);
+
+        Component component = componentRepository.findById(componentId)
+            .orElseThrow(ComponentNotFoundException::new);
+
+        if (!component.getProject().getProjectId().equals(projectId)) {
+            throw new UnauthorizedComponentAccessException();
+        }
+
+        try {
+            // 2. 컴포넌트와 연결된 모든 연결을 해제
+            List<ComponentLink> fromLinks = componentLinkRepository.findByFromComponentId(component);
+            List<ComponentLink> toLinks = componentLinkRepository.findByToComponentId(component);
+
+            // 3. Docker Swarm에서 모든 연결 해제
+            for (ComponentLink link : fromLinks) {
+                try {
+                    dockerSwarmService.disconnectComponentsInSwarm(
+                        projectId.toString(),
+                        link.getFromComponentId(),
+                        link.getToComponentId()
+                    );
+                } catch (Exception e) {
+                    log.warn("링크 해제 실패 (계속 진행): {}", e.getMessage());
+                }
+            }
+
+            for (ComponentLink link : toLinks) {
+                try {
+                    dockerSwarmService.disconnectComponentsInSwarm(
+                        projectId.toString(),
+                        link.getFromComponentId(),
+                        link.getToComponentId()
+                    );
+                } catch (Exception e) {
+                    log.warn("링크 해제 실패 (계속 진행): {}", e.getMessage());
+                }
+            }
+
+            // 4. 데이터베이스에서 모든 링크 삭제
+            if (!fromLinks.isEmpty()) {
+                componentLinkRepository.deleteAll(fromLinks);
+            }
+            if (!toLinks.isEmpty()) {
+                componentLinkRepository.deleteAll(toLinks);
+            }
+
+            // 5. 컴포넌트 설정에서 모든 연결 관련 환경변수 제거
+            removeAllConnectionsFromEnvironment(component);
+
+            log.info("컴포넌트의 모든 연결 해제 완료: {}", componentId);
+
+            return new DefaultResponseDto("컴포넌트의 모든 연결 해제가 완료되었습니다.");
+
+        } catch (Exception e) {
+            log.error("컴포넌트 연결 해제 실패: {}", e.getMessage());
+            throw new CustomException("컴포넌트 연결 해제 중 오류가 발생했습니다: " + e.getMessage(), 
+                                    HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+
+
     }
 
     // TODO : 컴포넌트 서비스 접속 , 일단 제외하고 배포, 생성부터
@@ -334,12 +526,6 @@ public class ComponentService {
         throw new UnsupportedOperationException("Unimplemented method 'streamMonitoring'");
     }
 
-    // 컴포넌트 연결 해제
-    public DefaultResponseDto disconnectComponent(Long projectId, Long componentId) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'disconnectComponent'");
-    }
-
     /*  
         [x] : 컴포넌트 상태가 RUNNING이 아닌 경우에만 삭제 가능
         [x] : 삭제 전 후처리 (필요 시 고려할 것)
@@ -383,11 +569,137 @@ public class ComponentService {
             componentLinkRepository.deleteAll(toLinks);
         }
 
-        // 삭제
-        componentRepository.delete(component);
-
-        return new DefaultResponseDto("컴포넌트 삭제 완료");
+        try {
+            // 개선된 링크 삭제 방식
+            deleteComponentLinksDirectly(component);
+    
+            // Docker Swarm에서 컴포넌트 제거
+            removeComponentFromSwarm(projectId, component);
+    
+            // MongoDB에서 컴포넌트 설정 및 상태 삭제
+            componentSettingRepository.findByComponentId(componentId)
+                .ifPresent(componentSettingRepository::delete);
+            
+            componentStatusRepository.findByComponentId(componentId.toString())
+                .ifPresent(componentStatusRepository::delete);
+    
+            // JPA에서 컴포넌트 삭제
+            componentRepository.delete(component);
+    
+            log.info("컴포넌트 완전 삭제 완료: {}", componentId);
+            return new DefaultResponseDto("컴포넌트 삭제 완료");
+    
+        } catch (Exception e) {
+            log.error("컴포넌트 삭제 실패: {}", e.getMessage());
+            throw new CustomException("컴포넌트 삭제 중 오류가 발생했습니다: " + e.getMessage(), 
+                                    HttpStatus.INTERNAL_SERVER_ERROR);
+        }
     }
 
+    
+    // Helper 메서드들
+    private ComponentLink.ConnectionType determineConnectionType(String connectionTypeStr) {
+        if (connectionTypeStr == null) {
+            return ComponentLink.ConnectionType.INTERNAL;
+        }
+        
+        try {
+            return ComponentLink.ConnectionType.valueOf(connectionTypeStr.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return ComponentLink.ConnectionType.INTERNAL;
+        }
+    }
+
+    private void updateComponentEnvironmentVariables(Component fromComponent, Component toComponent, 
+                                                    ComponentLink.ConnectionType connectionType) {
+        try {
+            // MongoDB에서 컴포넌트 설정 조회
+            Optional<ComponentSettingDocument> settingDoc = 
+                componentSettingRepository.findByComponentId(fromComponent.getComponentId());
+            
+            if (settingDoc.isPresent()) {
+                ObjectMapper objectMapper = new ObjectMapper();
+                JsonNode root = objectMapper.readTree(settingDoc.get().getSettingJson());
+                
+                // 환경변수 추가
+                String targetServiceName = "pado-" + toComponent.getComponentId();
+                String connectionInfo = generateConnectionInfo(toComponent, connectionType);
+                
+                // JSON 수정 및 저장
+                ((com.fasterxml.jackson.databind.node.ObjectNode) root)
+                    .put("CONNECTED_" + toComponent.getSubtype().toUpperCase() + "_HOST", targetServiceName)
+                    .put("CONNECTED_" + toComponent.getSubtype().toUpperCase() + "_INFO", connectionInfo);
+                
+                // 업데이트된 설정 저장
+                ComponentSettingDocument updatedDoc = ComponentSettingDocument.builder()
+                    .id(settingDoc.get().getId())
+                    .componentId(fromComponent.getComponentId())
+                    .credentialId(settingDoc.get().getCredentialId())
+                    .settingJson(objectMapper.writeValueAsString(root))
+                    .build();
+                
+                componentSettingRepository.save(updatedDoc);
+            }
+        } catch (Exception e) {
+            log.error("환경변수 업데이트 실패: {}", e.getMessage());
+        }
+    }
+
+    private void removeComponentEnvironmentVariables(Component component) {
+        try {
+            // MongoDB에서 컴포넌트 설정 조회 및 연결 관련 환경변수 제거
+            Optional<ComponentSettingDocument> settingDoc = 
+                componentSettingRepository.findByComponentId(component.getComponentId());
+            
+            if (settingDoc.isPresent()) {
+                ObjectMapper objectMapper = new ObjectMapper();
+                JsonNode root = objectMapper.readTree(settingDoc.get().getSettingJson());
+                
+                // 연결 관련 환경변수 제거
+                com.fasterxml.jackson.databind.node.ObjectNode objectNode = 
+                    (com.fasterxml.jackson.databind.node.ObjectNode) root;
+                
+                objectNode.fieldNames().forEachRemaining(fieldName -> {
+                    if (fieldName.startsWith("CONNECTED_")) {
+                        objectNode.remove(fieldName);
+                    }
+                });
+                
+                // 업데이트된 설정 저장
+                ComponentSettingDocument updatedDoc = ComponentSettingDocument.builder()
+                    .id(settingDoc.get().getId())
+                    .componentId(component.getComponentId())
+                    .credentialId(settingDoc.get().getCredentialId())
+                    .settingJson(objectMapper.writeValueAsString(root))
+                    .build();
+                
+                componentSettingRepository.save(updatedDoc);
+            }
+        } catch (Exception e) {
+            log.error("환경변수 제거 실패: {}", e.getMessage());
+        }
+    }
+
+    private String generateConnectionInfo(Component component, ComponentLink.ConnectionType connectionType) {
+        String serviceName = "pado-" + component.getComponentId();
+        
+        return switch (component.getSubtype().toLowerCase()) {
+            case "mysql" -> switch (connectionType) {
+                case DB -> serviceName + ":3306";
+                default -> serviceName;
+            };
+            case "spring" -> switch (connectionType) {
+                case HTTP -> "http://" + serviceName + ":8080";
+                default -> serviceName + ":8080";
+            };
+            case "react" -> switch (connectionType) {
+                case HTTP -> "http://" + serviceName + ":80";
+                default -> serviceName + ":80";
+            };
+            case "redis" -> serviceName + ":6379";
+            case "postgresql" -> serviceName + ":5432";
+            default -> serviceName;
+        };
+    }
     
 }

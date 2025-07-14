@@ -109,11 +109,26 @@ public class ComponentController {
         return componentService.streamMonitoring(projectId, componentId);
     }
 
-    @Operation(summary = "컴포넌트 연결 해제")
+    @Operation(summary = "특정 컴포넌트 간 연결 해제")
+    @DeleteMapping("/projects/{projectId}/components/{componentId}/connect/{targetComponentId}")
+    public ResponseEntity<DefaultResponseDto> disconnectSpecificComponent(
+        @PathVariable Long projectId, 
+        @PathVariable Long componentId,
+        @PathVariable Long targetComponentId) {
+        
+        DefaultResponseDto response = componentService.disconnectSpecificComponent(
+            projectId, componentId, targetComponentId);
+        return ResponseEntity.ok(response);
+    }
+
+    @Operation(summary = "컴포넌트의 모든 연결 해제")
     @DeleteMapping("/projects/{projectId}/components/{componentId}/connect")
-    public ResponseEntity<DefaultResponseDto> disconnectComponent(@PathVariable Long projectId, @PathVariable Long componentId) {
-        componentService.disconnectComponent(projectId, componentId);
-        return ResponseEntity.ok(new DefaultResponseDto("컴포넌트 연결 해제 완료"));
+    public ResponseEntity<DefaultResponseDto> disconnect(
+        @PathVariable Long projectId, 
+        @PathVariable Long componentId) {
+        
+        DefaultResponseDto response = componentService.disconnect(projectId, componentId);
+        return ResponseEntity.ok(response);
     }
 
     @Operation(summary = "컴포넌트 삭제")
