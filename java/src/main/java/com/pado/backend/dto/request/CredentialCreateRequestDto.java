@@ -19,6 +19,7 @@ public class CredentialCreateRequestDto {
     private String type;
 
     // TODO : data에 ID, token을 JSON 형태로 저장할건지 or accountId, token으로 나눌건지 결정
+    // TODO : 현재 평문으로 저장되어 있는 상태임. 보안 매우 위험
     @Schema(description = "크레덴셜 실제 데이터(ID / Token)", example = "AKIAIOSFODNN7EXAMPLE/secret")
     private String data;
 }

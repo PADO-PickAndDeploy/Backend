@@ -22,34 +22,27 @@ public class CustomUserDetailsService implements UserDetailsService {
     private final UserRepository userRepository;
     
     /**
-     * 사용자명(이메일)으로 사용자 정보를 조회
-     * Spring Security가 인증 시 자동으로 호출하는 메소드
-     * 
-     * @param email 사용자 이메일
-     * @return UserDetails 구현체 (CustomUserDetails)
-     * @throws UsernameNotFoundException 사용자를 찾을 수 없을 때
+     * Spring Security 인증용 - userName 기반
+     * @param userName 사용자명 (로그인 ID)
+     * @return UserDetails 구현체
      */
     @Override
     @Transactional(readOnly = true)
-    public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
-        log.debug("사용자 인증 시도: {}", email);
+    public UserDetails loadUserByUsername(String userName) throws UsernameNotFoundException {
+        log.debug("사용자 인증 시도: {}", userName);
         
-        User user = userRepository.findByEmail(email)
+        User user = userRepository.findByUserName(userName)
                 .orElseThrow(() -> {
-                    log.warn("사용자를 찾을 수 없음: {}", email);
-                    return new UsernameNotFoundException("사용자를 찾을 수 없습니다: " + email);
+                    log.warn("사용자를 찾을 수 없음: {}", userName);
+                    return new UsernameNotFoundException("사용자를 찾을 수 없습니다: " + userName);
                 });
         
-        log.debug("사용자 조회 성공: {} (역할: {})", user.getEmail(), user.getRole());
+        log.debug("사용자 조회 성공: {} (ID: {})", user.getUserName(), user.getUserId());
         return new CustomUserDetails(user);
     }
     
     /**
-     * 사용자 ID로 사용자 정보를 조회 (JWT 인증용)
-     * 
-     * @param userId 사용자 ID
-     * @return CustomUserDetails
-     * @throws UsernameNotFoundException 사용자를 찾을 수 없을 때
+     * JWT 인증용 - userId 기반
      */
     @Transactional(readOnly = true)
     public CustomUserDetails loadUserById(Long userId) throws UsernameNotFoundException {
@@ -61,19 +54,7 @@ public class CustomUserDetailsService implements UserDetailsService {
                     return new UsernameNotFoundException("사용자 ID를 찾을 수 없습니다: " + userId);
                 });
         
-        log.debug("사용자 ID 조회 성공: {} (이메일: {})", userId, user.getEmail());
+        log.debug("사용자 ID 조회 성공: {} (사용자명: {})", userId, user.getUserName());
         return new CustomUserDetails(user);
-    }
-    
-    /**
-     * 이메일로 사용자 정보를 조회 (명시적 메소드)
-     * 
-     * @param email 사용자 이메일
-     * @return CustomUserDetails
-     * @throws UsernameNotFoundException 사용자를 찾을 수 없을 때
-     */
-    @Transactional(readOnly = true)
-    public CustomUserDetails loadUserByEmail(String email) throws UsernameNotFoundException {
-        return (CustomUserDetails) loadUserByUsername(email);
     }
 }

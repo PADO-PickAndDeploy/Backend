@@ -20,8 +20,9 @@ import com.pado.backend.global.exception.UserNotFoundException;
 import com.pado.backend.repository.CredentialRepository;
 import com.pado.backend.repository.UserRepository;
 
-// TODO : Vault(크리덴셜 보안) 적용하기
 import lombok.RequiredArgsConstructor;
+
+// TODO : Vault(크리덴셜 보안) 적용하기
 @Service
 @RequiredArgsConstructor
 public class CredentialService {

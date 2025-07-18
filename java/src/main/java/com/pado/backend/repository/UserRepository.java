@@ -9,5 +9,8 @@ import com.pado.backend.domain.User;
 
 @Repository
 public interface UserRepository extends JpaRepository<User, Long> {
-    public Optional<User> findByEmail(String email);
+    Optional<User> findByEmail(String email);
+    Optional<User> findByUserName(String userName);
+    boolean existsByEmail(String email);
+    boolean existsByUserName(String userName);
 }

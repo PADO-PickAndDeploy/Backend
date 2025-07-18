@@ -30,9 +30,13 @@ import lombok.NoArgsConstructor;
 public class Project {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "id")
     private Long projectId;
     
+    @Column(name = "name", nullable = false, length = 100)
     private String projectName;
+
+    @Column(name = "description", nullable = false, columnDefinition = "TEXT")
     private String projectDescription;
 
     @CreatedDate  
@@ -43,6 +47,6 @@ public class Project {
     private LocalDateTime updatedAt;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id")
+    @JoinColumn(name = "uid")
     private User user;
 }

@@ -30,6 +30,7 @@ import com.pado.backend.repository.mongo.ComponentStatusRepository;
 
 import lombok.RequiredArgsConstructor;
 
+// TODO : 상태 관련 수정 필요
 @Service
 @RequiredArgsConstructor
 public class ProjectService {
@@ -45,6 +46,7 @@ public class ProjectService {
         
         User user = userRepository.findById(userId)
                 .orElseThrow(UserNotFoundException::new);
+
         Project project = Project.builder()
                 .projectName(request.getName())
                 .projectDescription(request.getDescription())
