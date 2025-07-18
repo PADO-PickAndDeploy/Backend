@@ -25,13 +25,20 @@ import lombok.NoArgsConstructor;
 public class User {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "id")
     private Long userId;
 
+    @Column(name = "name", unique = true, nullable = false, length = 50)
     private String userName;
-
+    
+    @Column(nullable = false, length = 100)
     private String email;
 
+    @Column(nullable = false)
     private String password;
+
+    @Column(name = "key", unique = true, nullable = false)
+    private String vaultKey;
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Credential> credentials;
@@ -39,7 +46,7 @@ public class User {
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Project> projects;
 
-    // [ ] : 아직 상의 없이 만들어 둔 필드
+    // CHECKLIST : 추후 확장성 위해 Role 필드, Default USER
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     @Builder.Default

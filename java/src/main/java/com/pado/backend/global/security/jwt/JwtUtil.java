@@ -34,31 +34,31 @@ public class JwtUtil {
 
     /**
      * Access Token 생성
-     * @param email 사용자 이메일
+     * @param userId 사용자 ID
      * @return JWT Access Token
      */
-    public String generateAccessToken(String email) {
-        return generateToken(email, accessTokenExpiration);
+    public String generateAccessToken(String userId) {
+        return generateToken(userId, accessTokenExpiration);
     }
 
     /**
      * Refresh Token 생성
-     * @param email 사용자 이메일
+     * @param userId 사용자 ID
      * @return JWT Refresh Token
      */
-    public String generateRefreshToken(String email) {
-        return generateToken(email, refreshTokenExpiration);
+    public String generateRefreshToken(String userId) {
+        return generateToken(userId, refreshTokenExpiration);
     }
 
     /**
      * JWT 토큰 생성 (공통 로직)
      */
-    private String generateToken(String email, long expirationTimeMs) {
+    private String generateToken(String userId, long expirationTimeMs) {
         Date now = new Date();
         Date expiryDate = new Date(now.getTime() + expirationTimeMs);
 
         return Jwts.builder()
-                .setSubject(email)
+                .setSubject(userId)
                 .claim("type", expirationTimeMs == accessTokenExpiration ? "ACCESS" : "REFRESH")
                 .setIssuedAt(now)
                 .setExpiration(expiryDate)
@@ -97,12 +97,13 @@ public class JwtUtil {
     }
 
     /**
-     * JWT 토큰에서 이메일 추출
+     * JWT 토큰에서 사용자 ID 추출
      * @param token JWT 토큰
-     * @return 이메일
+     * @return 사용자 ID
      */
-    public String extractEmail(String token) {
-        return extractClaims(token).getSubject();
+    public Long extractUserId(String token) {
+        String userIdStr = extractClaims(token).getSubject();
+        return Long.parseLong(userIdStr);
     }
 
     /**
@@ -168,4 +169,5 @@ public class JwtUtil {
             return false;
         }
     }
+
 }

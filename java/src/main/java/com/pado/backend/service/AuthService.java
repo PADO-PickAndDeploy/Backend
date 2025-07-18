@@ -1,6 +1,9 @@
 package com.pado.backend.service;
 
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,7 +16,10 @@ import com.pado.backend.dto.response.DefaultResponseDto;
 import com.pado.backend.dto.response.UserLoginResponseDto;
 import com.pado.backend.dto.response.UserRegisterResponseDto;
 import com.pado.backend.global.exception.InvalidAuthenticationException;
+import com.pado.backend.global.security.jwt.JwtUtil;
+import com.pado.backend.global.security.jwt.TokenBlacklistService;
 import com.pado.backend.global.security.userdetails.CustomUserDetails;
+import com.pado.backend.global.vault.util.VaultKeyUtil;
 import com.pado.backend.repository.UserRepository;
 
 import lombok.RequiredArgsConstructor;
@@ -22,54 +28,96 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 @RequiredArgsConstructor
 @Slf4j
-// TODO: 서비스 로직 구현
 public class AuthService {
+
     private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtUtil jwtUtil;
+    private final AuthenticationManager authenticationManager;
+    private final TokenBlacklistService tokenBlacklistService;
 
-    public UserRegisterResponseDto signup(UserRegisterRequestDto request) {
-        return null;
-    }
-
-    public UserLoginResponseDto signin(UserLoginRequestDto request) {
-        return null;
-    }
-
-    // 기존 userId를 받아서 백엔드에서 본인 계정인지 확인한 뒤 로그아웃
-    // public DefaultResponseDto signout(UserLogoutRequestDto request) {
-    //    return null;
-    // }
-    
-    // JWT 토큰만 받아서 로그아웃
+    /**
+     * 회원가입
+     * @param request 회원가입 요청 DTO
+     * @return 회원가입 응답 DTO (JWT 토큰 포함)
+     */
     @Transactional
-    public DefaultResponseDto signout(Authentication authentication) {
+    public UserRegisterResponseDto signup(UserRegisterRequestDto request) {
+        // 이메일 중복 체크
+        if (userRepository.existsByEmail(request.getEmail())) {
+            throw new DuplicateEmailException();
+        }
+
+        User newUser = User.builder()
+                .userName(request.getUserName())
+                .email(request.getEmail())
+                .password(passwordEncoder.encode(request.getPassword()))
+                .vaultKey(VaultKeyUtil.generateVaultKey())
+                .build();
+
+        User savedUser = userRepository.save(newUser);
+
+        // JWT 토큰 생성
+        String accessToken = jwtUtil.generateAccessToken(savedUser.getUserId().toString());
+        String refreshToken = jwtUtil.generateRefreshToken(savedUser.getUserId().toString());
+        
+        return new UserRegisterResponseDto(
+                savedUser.getUserId(),
+                "회원 가입이 성공적으로 완료되었습니다.",
+                accessToken,
+                refreshToken
+        );
+    }
+
+    /**
+     * 로그인 - 보안 로깅 적용
+     * @param request 로그인 요청 DTO
+     * @return 로그인 응답 DTO (JWT 토큰 포함)
+     */
+    @Transactional(readOnly = true)
+    public UserLoginResponseDto signin(UserLoginRequestDto request) {
+        User user = userRepository.findByUserName(request.getUserName())
+                .orElseThrow(InvalidLoginCredentialsException::new);
+
+        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+            throw new InvalidLoginCredentialsException();
+        }
+
+        // Spring Security 인증 처리 (아이디 기반)
+        authenticationManager.authenticate(
+                new UsernamePasswordAuthenticationToken(user.getUserName(), request.getPassword())
+        );
+        
+        // 사용자 ID로 JWT 토큰 생성
+        String accessToken = jwtUtil.generateAccessToken(user.getUserId().toString());
+        String refreshToken = jwtUtil.generateRefreshToken(user.getUserId().toString());
+        
+        return new UserLoginResponseDto(accessToken, refreshToken);
+    }
+    
+    /**
+     * 로그아웃 (블랙리스트 방식)
+     * @param userDetails 현재 인증된 사용자 정보
+     * @param accessToken 무효화할 Access Token
+     * @return 로그아웃 응답 DTO
+     */
+    @Transactional
+    public DefaultResponseDto signout(CustomUserDetails userDetails, String accessToken) {
         try {
-            // JWT 토큰에서 현재 로그인한 사용자 정보 추출
-            CustomUserDetails userDetails = (CustomUserDetails) authentication.getPrincipal();
+            log.info("로그아웃 요청: 사용자ID={}", userDetails.getUserId());
             
-            Long userId = userDetails.getUserId();
-            String userEmail = userDetails.getEmail();
-            String userName = userDetails.getName();
-            Role userRole = userDetails.getRole();
+            // Access Token을 블랙리스트에 추가
+            if (accessToken != null && !accessToken.trim().isEmpty()) {
+                tokenBlacklistService.blacklistToken(accessToken);
+            }
             
-            // 로그아웃 로그 기록
-            log.info("사용자 로그아웃 - ID: {}, Email: {}, Name: {}, Role: {}", 
-                    userId, userEmail, userName, userRole);
-                
-            // 로그아웃 성공 응답
+            log.info("로그아웃 완료: 사용자ID={}", userDetails.getUserId());
             return new DefaultResponseDto("로그아웃이 완료되었습니다");
             
-        } catch (ClassCastException e) {
-            // Authentication 객체에서 CustomUserDetails 추출 실패
-            log.error("로그아웃 처리 중 사용자 정보 추출 실패: {}", e.getMessage());
-            throw new InvalidAuthenticationException();
-            
         } catch (Exception e) {
-            // 기타 예상치 못한 오류
-            log.error("로그아웃 처리 중 예상치 못한 오류 발생: {}", e.getMessage(), e);
-            
-            // 보안상 이유로 로그아웃은 항상 성공으로 응답
-            // (공격자에게 시스템 정보 노출 방지)
+            log.error("로그아웃 중 예외 발생: {}", e.getMessage());
             return new DefaultResponseDto("로그아웃이 완료되었습니다");
         }
     }
+
 }

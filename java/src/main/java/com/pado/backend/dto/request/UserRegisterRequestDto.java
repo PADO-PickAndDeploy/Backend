@@ -13,20 +13,21 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class UserRegisterRequestDto {
-    // TODO : userName 쓸건가?
-    @NotBlank(message = "사용자 이름 입력은 필수입니다.")
-    @Size(min = 3, max = 20, message = "사용자 이름은 3~20자 사이여야 합니다.")
+
+    @NotBlank(message = "아이디 입력은 필수입니다.")
+    @Size(min = 4, max = 20, message = "아아디는 4~20자 사이여야 합니다.")
     @Pattern(
-        regexp = "^[A-Za-z0-9]+$",
-        message = "사용자 이름은 영문과 숫자만 사용 가능합니다."
+        regexp = "^[a-zA-Z][a-zA-Z0-9]*$",
+        message = "아이디는 영문으로 시작하고 영문, 숫자만 사용 가능합니다."
     )
-    @Schema(description = "사용자 이름", example = "홍길동")
+    @Schema(description = "아이디", example = "pado123")
     private String userName;
 
-    @NotBlank(message = "비밀번호 입력은 필수입니다.")
+    @NotBlank(message = "비밀번호는 필수입니다.")
+    @Size(min = 8, max = 20, message = "비밀번호는 8~20자 사이여야 합니다.")
     @Pattern(
-        regexp = "^(?=.*[A-Za-z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,20}$",
-        message = "비밀번호는 영문, 숫자, 특수문자를 포함한 8~20자여야 합니다."
+        regexp = "^(?=.*[a-zA-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,20}$",
+        message = "비밀번호는 영문, 숫자, 특수문자를 포함해야 합니다."
     )
     @Schema(description = "비밀번호", example = "pado123!")
     private String password;

@@ -11,6 +11,7 @@ import com.pado.backend.dto.request.UserRegisterRequestDto;
 import com.pado.backend.dto.response.DefaultResponseDto;
 import com.pado.backend.dto.response.UserLoginResponseDto;
 import com.pado.backend.dto.response.UserRegisterResponseDto;
+import com.pado.backend.global.security.userdetails.CustomUserDetails;
 import com.pado.backend.service.AuthService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -19,9 +20,12 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 
 @RestController
 @RequiredArgsConstructor
@@ -65,7 +69,7 @@ public class AuthController {
         )
     })
     @PostMapping("/signup")
-    public ResponseEntity<UserRegisterResponseDto> signup(@RequestBody UserRegisterRequestDto request) {
+    public ResponseEntity<UserRegisterResponseDto> signup(@Valid @RequestBody UserRegisterRequestDto request) {
         return ResponseEntity.ok(authService.signup(request));
     }
     
@@ -113,7 +117,7 @@ public class AuthController {
         )
     })
     @PostMapping("/signin")
-    public ResponseEntity<UserLoginResponseDto> signin(@RequestBody UserLoginRequestDto request) {
+    public ResponseEntity<UserLoginResponseDto> signin(@Valid @RequestBody UserLoginRequestDto request) {
         return ResponseEntity.ok(authService.signin(request));
     }
 
@@ -153,7 +157,18 @@ public class AuthController {
         )
     })
     @PostMapping("/signout")
-    public ResponseEntity<DefaultResponseDto> signout(Authentication authentication) {
-        return ResponseEntity.ok(authService.signout(authentication));
+    public ResponseEntity<DefaultResponseDto> signout(
+            @AuthenticationPrincipal CustomUserDetails userDetails,
+            HttpServletRequest request) {
+        
+        // Authorization 헤더에서 토큰 추출
+        String authHeader = request.getHeader("Authorization");
+        String accessToken = null;
+        
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            accessToken = authHeader.substring(7);
+        }
+        
+        return ResponseEntity.ok(authService.signout(userDetails, accessToken));
     }
 }
