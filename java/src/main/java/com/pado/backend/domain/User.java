@@ -37,6 +37,7 @@ public class User {
     @Column(nullable = false)
     private String password;
 
+    // 사용자별 고유한 Vault 경로 prefix
     @Column(name = "key", unique = true, nullable = false)
     private String vaultKey;
 

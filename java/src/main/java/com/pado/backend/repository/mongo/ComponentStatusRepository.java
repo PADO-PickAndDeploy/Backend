@@ -11,7 +11,6 @@ import com.pado.backend.domain.mongo.ComponentStatusDocument;
 
 @Repository
 public interface ComponentStatusRepository extends MongoRepository<ComponentStatusDocument, String> {
-
     /*
     TODO : 탐색 속도를 높이려면 어떻게 해야할까? 모든 서비스 사용자의 컴포넌트 상태를 저장하고 있는데
     ComponentStatusDocument의 필드에 userId도 추가해야 할까?
