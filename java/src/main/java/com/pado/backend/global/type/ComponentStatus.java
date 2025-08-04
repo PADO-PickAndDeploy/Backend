@@ -3,6 +3,7 @@ package com.pado.backend.global.type;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 public enum ComponentStatus {
+    // TODO : RUNNING -> DEPLOY
     RUNNING(0),
     START(1),
     ERROR(2),
