@@ -1,12 +1,13 @@
 package com.pado.backend.controller;
 
+import java.util.Map;
+
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.pado.backend.dto.request.UserLoginRequestDto;
-import com.pado.backend.dto.request.UserLogoutRequestDto;
 import com.pado.backend.dto.request.UserRegisterRequestDto;
 import com.pado.backend.dto.response.DefaultResponseDto;
 import com.pado.backend.dto.response.UserLoginResponseDto;
@@ -20,11 +21,9 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
-import org.springframework.security.core.Authentication;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 
 @RestController
@@ -159,16 +158,10 @@ public class AuthController {
     @PostMapping("/signout")
     public ResponseEntity<DefaultResponseDto> signout(
             @AuthenticationPrincipal CustomUserDetails userDetails,
-            HttpServletRequest request) {
+            @RequestBody Map<String, String> request) {
         
-        // Authorization 헤더에서 토큰 추출
-        String authHeader = request.getHeader("Authorization");
-        String accessToken = null;
+        String refreshToken = request.get("refreshToken");
         
-        if (authHeader != null && authHeader.startsWith("Bearer ")) {
-            accessToken = authHeader.substring(7);
-        }
-        
-        return ResponseEntity.ok(authService.signout(userDetails, accessToken));
+        return ResponseEntity.ok(authService.signout(userDetails, refreshToken));
     }
 }

@@ -33,40 +33,30 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, 
-                                  FilterChain filterChain) throws ServletException, IOException {
+                                FilterChain filterChain) throws ServletException, IOException {
         
         try {
             // 1. Request Header에서 JWT 토큰 추출
             String jwt = getJwtFromRequest(request);
             
-            // 2. JWT 토큰 유효성 검증 및 블랙리스트 체크
+            // 2. JWT 토큰 유효성 검증
             if (StringUtils.hasText(jwt) && jwtUtil.validateToken(jwt)) {
                 
-                // 3. 블랙리스트 체크
-                if (tokenBlacklistService.isBlacklisted(jwt)) {
-                    log.warn("블랙리스트된 토큰으로 접근 시도");
+                // 3. Access Token인지 확인
+                if (!jwtUtil.isAccessToken(jwt)) {
+                    log.warn("Refresh Token으로 API 접근 시도");
                     filterChain.doFilter(request, response);
                     return;
                 }
 
-                // 4. JWT에서 사용자 ID 추출
+                // 4. 바로 인증 처리
                 Long userId = jwtUtil.extractUserId(jwt);
-                
-                // 5. 사용자 정보 조회
                 UserDetails userDetails = userDetailsService.loadUserById(userId);
                 
-                // 6. Authentication 객체 생성
                 UsernamePasswordAuthenticationToken authentication = 
-                    new UsernamePasswordAuthenticationToken(
-                        userDetails, 
-                        null, 
-                        userDetails.getAuthorities()
-                    );
+                    new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
                 
-                // 7. 요청 정보 설정
                 authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                
-                // 8. SecurityContext에 인증 정보 저장
                 SecurityContextHolder.getContext().setAuthentication(authentication);
                 
                 log.debug("사용자 인증 성공: {}", userId);
@@ -97,8 +87,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         return path.equals("/signup") || 
                path.equals("/signin") || 
                path.startsWith("/swagger-ui") ||
-               path.startsWith("/v3/api-docs");
-            //    path.equals("/components") ||
-            //    path.startsWith("/components/search");
+               path.startsWith("/v3/api-docs") ||
+               path.equals("/components") ||
+               path.startsWith("/components/search");
     }
 }

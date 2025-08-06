@@ -7,6 +7,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 import org.springframework.validation.annotation.Validated;
 
+import com.pado.backend.global.exception.CustomException;
+import com.pado.backend.global.exception.ErrorCode;
+
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -18,33 +21,33 @@ import jakarta.validation.constraints.Pattern;
 @Validated
 @Getter
 @Setter
-@ToString(exclude = "token") // 보안: 토큰 정보 로깅 방지
+@ToString(exclude = {"token", "kvPath"}) // 보안: 토큰과 경로 정보 로깅 방지
 public class VaultProperties {
     
     /**
-     * Vault 사용 여부
+     * Vault 사용 여부, 기본값은 false
      */
     @NotNull
-    private Boolean enabled = true;
+    private Boolean enabled = false; 
     
     /**
      * Vault 서버 호스트
      */
     @NotBlank(message = "Vault host cannot be blank")
-    private String host = "localhost";
+    private String host;
     
     /**
      * Vault 서버 포트
      */
     @Min(value = 1, message = "Port must be greater than 0")
     @Max(value = 65535, message = "Port must be less than 65536")
-    private Integer port = 8200;
+    private Integer port;
     
     /**
      * Vault 서버 스키마 (http 또는 https)
      */
     @Pattern(regexp = "^(http|https)$", message = "Scheme must be 'http' or 'https'")
-    private String scheme = "http";
+    private String scheme;
     
     /**
      * Vault 인증 토큰
@@ -56,7 +59,7 @@ public class VaultProperties {
      */
     @NotBlank(message = "KV path cannot be blank")
     @Pattern(regexp = "^[a-zA-Z0-9/_-]+$", message = "KV path contains invalid characters")
-    private String kvPath = "secret/pado";
+    private String kvPath;
     
     /**
      * Vault 서버 URL 생성
@@ -99,7 +102,7 @@ public class VaultProperties {
     public String getProjectPath(String userVaultKey, Long projectId) {
         validateVaultKey(userVaultKey, "User vault key");
         if (projectId == null || projectId <= 0) {
-            throw new IllegalArgumentException("Project ID must be positive");
+            throw new CustomException(ErrorCode.INVALID_REQUEST, "Project ID must be positive");
         }
         return String.format("%s/users/%s/projects/%d", kvPath, userVaultKey, projectId);
     }
@@ -111,7 +114,7 @@ public class VaultProperties {
      */
     public String getSystemConfigPath(String configKey) {
         if (configKey == null || configKey.trim().isEmpty()) {
-            throw new IllegalArgumentException("Config key cannot be null or empty");
+            throw new CustomException(ErrorCode.INVALID_REQUEST, "Config key cannot be null or empty");
         }
         return String.format("%s/system/config/%s", kvPath, configKey);
     }
@@ -124,17 +127,17 @@ public class VaultProperties {
      */
     private void validateVaultKey(String vaultKey, String keyType) {
         if (vaultKey == null || vaultKey.trim().isEmpty()) {
-            throw new IllegalArgumentException(keyType + " cannot be null or empty");
+            throw new CustomException(ErrorCode.INVALID_REQUEST, keyType + " cannot be null or empty");
         }
         
         // 기본적인 보안 검증 (특수문자 등)
         if (!vaultKey.matches("^[a-zA-Z0-9_-]+$")) {
-            throw new IllegalArgumentException(keyType + " contains invalid characters");
+            throw new CustomException(ErrorCode.INVALID_REQUEST, keyType + " contains invalid characters");
         }
         
         // 최소 길이 검증
         if (vaultKey.length() < 10) {
-            throw new IllegalArgumentException(keyType + " must be at least 10 characters long");
+            throw new CustomException(ErrorCode.INVALID_REQUEST, keyType + " must be at least 10 characters long");
         }
     }
     
