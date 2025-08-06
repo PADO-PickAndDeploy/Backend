@@ -1,6 +1,5 @@
 package com.pado.backend.service;
 
-import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -17,10 +16,8 @@ import com.pado.backend.dto.response.ComponentInfo;
 import com.pado.backend.dto.response.DefaultResponseDto;
 import com.pado.backend.dto.response.ProjectDetailResponseDto;
 import com.pado.backend.dto.response.ProjectResponseDto;
-import com.pado.backend.global.exception.ProjectDeletionNotAllowedException;
-import com.pado.backend.global.exception.ProjectNotFoundException;
-import com.pado.backend.global.exception.UnauthorizedProjectAccessException;
-import com.pado.backend.global.exception.UserNotFoundException;
+import com.pado.backend.global.exception.CustomException;
+import com.pado.backend.global.exception.ErrorCode;
 import com.pado.backend.global.type.ComponentStatus;
 import com.pado.backend.global.type.ProjectStatus;
 import com.pado.backend.repository.ComponentRepository;
@@ -45,12 +42,12 @@ public class ProjectService {
     public ProjectResponseDto createProject(ProjectCreateRequestDto request, Long userId) {
         
         User user = userRepository.findById(userId)
-                .orElseThrow(UserNotFoundException::new);
+                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND));
 
         Project project = Project.builder()
                 .projectName(request.getName())
                 .projectDescription(request.getDescription())
-                .user(user) // [x] 파라미터에 userid가 들어가야하지 않나? 필요하다 크리덴셜 서비스 - 크리덴셜 생성 처럼 , DTO에 넣을거냐 엔드포인트에 넣을거냐
+                .user(user)
                 .build();
 
         Project saved = projectRepository.save(project);
@@ -67,7 +64,7 @@ public class ProjectService {
     @Transactional(readOnly = true)
     public List<ProjectResponseDto> getAllProjects(Long userId) {
         User user = userRepository.findById(userId)
-                .orElseThrow(UserNotFoundException::new);
+                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND));
 
         return projectRepository.findByUser(user).stream()
         .map(project -> {
@@ -79,18 +76,18 @@ public class ProjectService {
                 projectStatus,
                 project.getCreatedAt().format(formatter)
             );
-    })
-    .collect(Collectors.toList());
+            })
+            .collect(Collectors.toList());
     }
 
     // 프로젝트 개별 조회
     @Transactional(readOnly = true)
     public ProjectDetailResponseDto getProjectById(Long userId, Long projectId) {
         Project project = projectRepository.findById(projectId)
-                .orElseThrow(ProjectNotFoundException::new);
+                .orElseThrow(() -> new CustomException(ErrorCode.PROJECT_NOT_FOUND));
 
         if (!project.getUser().getUserId().equals(userId)) {
-            throw new UnauthorizedProjectAccessException();
+            throw new CustomException(ErrorCode.PROJECT_ACCESS_DENIED);
         }
 
         // 1. 프로젝트에 연결된 컴포넌트 조회 + 각 컴포넌트의 상태 계산
@@ -146,15 +143,15 @@ public class ProjectService {
     @Transactional
     public DefaultResponseDto deleteProject(Long userId, Long projectId) {
         Project project = projectRepository.findById(projectId)
-                .orElseThrow(ProjectNotFoundException::new);
+                .orElseThrow(() -> new CustomException(ErrorCode.PROJECT_NOT_FOUND));
         ProjectStatus status = determineProjectStatus(project);
 
         if (status == ProjectStatus.RUNNING) {
-            throw new ProjectDeletionNotAllowedException();
+            throw new CustomException(ErrorCode.PROJECT_DELETION_NOT_ALLOWED);
         }
 
         if (!project.getUser().getUserId().equals(userId)) {
-            throw new UnauthorizedProjectAccessException();
+            throw new CustomException(ErrorCode.PROJECT_ACCESS_DENIED);
         }
 
         projectRepository.delete(project);

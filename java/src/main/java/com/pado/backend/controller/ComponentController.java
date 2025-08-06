@@ -41,11 +41,11 @@ public class ComponentController {
         return ResponseEntity.ok(componentService.getComponentTypes());
     }
 
-    // @Operation(summary = "컴포넌트 검색")
-    // @GetMapping("/components/search")
-    // public ResponseEntity<List<ComponentSearchDto>> searchComponents(@RequestParam(name = "q") String keyword) {
-    //     return ResponseEntity.ok(componentService.searchComponents(keyword));
-    // }
+    @Operation(summary = "컴포넌트 검색")
+    @GetMapping("/components/search")
+    public ResponseEntity<List<ComponentSearchDto>> searchComponents(@RequestParam(name = "q") String keyword) {
+        return ResponseEntity.ok(componentService.searchComponents(keyword));
+    }
 
     @Operation(
         summary = "컴포넌트 배치",

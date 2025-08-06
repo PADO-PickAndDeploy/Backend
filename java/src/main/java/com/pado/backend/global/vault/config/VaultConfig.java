@@ -10,6 +10,9 @@ import org.springframework.vault.client.VaultEndpoint;
 import org.springframework.vault.core.VaultTemplate;
 import org.springframework.vault.support.VaultToken;
 
+import com.pado.backend.global.exception.CustomException;
+import com.pado.backend.global.exception.ErrorCode;
+
 import java.net.URI;
 import java.net.URISyntaxException;
 
@@ -53,7 +56,7 @@ public class VaultConfig {
             
         } catch (Exception e) {
             log.error("Failed to configure Vault template: {}", e.getMessage());
-            throw new VaultConfigurationException("Vault configuration failed", e);
+            throw new CustomException(ErrorCode.VAULT_CONFIGURATION_ERROR, e);
         }
     }
     
@@ -63,11 +66,11 @@ public class VaultConfig {
      */
     private void validateVaultConfiguration() {
         if (!vaultProperties.isValidConfiguration()) {
-            throw new VaultConfigurationException("Invalid Vault configuration");
+            throw new CustomException(ErrorCode.VAULT_CONFIGURATION_ERROR);
         }
         
         if (vaultProperties.getToken() == null || vaultProperties.getToken().trim().isEmpty()) {
-            throw new VaultConfigurationException("Vault token is required");
+            throw new CustomException(ErrorCode.VAULT_CONFIGURATION_ERROR);
         }
         
         // 운영환경에서 HTTP 사용 시 경고
@@ -91,7 +94,7 @@ public class VaultConfig {
             URI vaultUri = new URI(vaultProperties.getVaultUrl());
             return VaultEndpoint.from(vaultUri);
         } catch (URISyntaxException e) {
-            throw new VaultConfigurationException("Invalid Vault URL: " + vaultProperties.getVaultUrl(), e);
+            throw new CustomException(ErrorCode.VAULT_CONFIGURATION_ERROR, "Invalid Vault URL: " + vaultProperties.getVaultUrl(), e);
         }
     }
     
@@ -182,16 +185,4 @@ public class VaultConfig {
         return null; // VaultService에서 null 체크로 처리
     }
     
-    /**
-     * Vault 설정 예외 클래스
-     */
-    public static class VaultConfigurationException extends RuntimeException {
-        public VaultConfigurationException(String message) {
-            super(message);
-        }
-        
-        public VaultConfigurationException(String message, Throwable cause) {
-            super(message, cause);
-        }
-    }
 }

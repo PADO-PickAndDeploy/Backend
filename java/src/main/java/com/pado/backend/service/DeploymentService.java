@@ -4,15 +4,8 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.Executor;
 
-import org.springframework.data.mongodb.core.MongoTemplate;
-import org.springframework.data.mongodb.core.query.Criteria;
-import org.springframework.data.mongodb.core.query.Query;
-import org.springframework.data.mongodb.core.query.Update;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,13 +17,11 @@ import com.pado.backend.domain.Credential;
 import com.pado.backend.domain.Deployment;
 import com.pado.backend.domain.Project;
 import com.pado.backend.domain.mongo.ComponentSettingDocument;
-import com.pado.backend.domain.mongo.ComponentStatusDocument;
 import com.pado.backend.dto.response.ChargeEstimateDto;
 import com.pado.backend.dto.response.ChargeResultDto;
 import com.pado.backend.dto.response.CheckDto;
 import com.pado.backend.global.exception.CustomException;
-import com.pado.backend.global.exception.InvalidCredentialIdException;
-import com.pado.backend.global.exception.ProjectNotFoundException;
+import com.pado.backend.global.exception.ErrorCode;
 import com.pado.backend.global.type.ComponentStatus;
 import com.pado.backend.global.type.DeploymentStatus;
 import com.pado.backend.repository.ComponentLinkRepository;
@@ -86,7 +77,7 @@ public class DeploymentService {
         SseEmitter emitter = new SseEmitter(30 * 60 * 1000L);
 
         Project project = projectRepository.findById(projectId)
-            .orElseThrow(ProjectNotFoundException::new);
+            .orElseThrow(() -> new CustomException(ErrorCode.PROJECT_NOT_FOUND));
 
         List<Component> components = componentRepository.findByProject(project);
 
@@ -119,10 +110,13 @@ public class DeploymentService {
         for (Component component : components) {
             try {
                 ComponentSettingDocument settingDoc = componentSettingRepository.findByComponentId(component.getComponentId())
-                    .orElseThrow(() -> new CustomException("ComponentId " + component.getComponentId() + " 의 설정 정보가 존재하지 않습니다.", HttpStatus.BAD_REQUEST));
+                    .orElseThrow(() -> new CustomException(ErrorCode.COMPONENT_NOT_FOUND, 
+                        "ComponentId " + component.getComponentId() + " 의 설정 정보가 존재하지 않습니다."));
+        
                 
                 Credential credential = credentialRepository.findById(settingDoc.getCredentialId())
-                .orElseThrow(InvalidCredentialIdException::new);
+                    .orElseThrow(() -> new CustomException(ErrorCode.VAULT_SECRET_NOT_FOUND,
+                        "Credential ID " + settingDoc.getCredentialId() + "를 찾을 수 없습니다."));
 
                 JsonNode root = objectMapper.readTree(settingDoc.getSettingJson());
                 String type = root.path("type").asText();
@@ -159,7 +153,8 @@ public class DeploymentService {
                     case "MySQL" -> spec = ComponentSpec.newBuilder()
                         .setMySQL(convertToMySQL(root)).build();
 
-                    default -> throw new IllegalArgumentException("지원하지 않는 컴포넌트 타입: " + type);
+                    default -> throw new CustomException(ErrorCode.INVALID_REQUEST,
+                        "지원하지 않는 컴포넌트 타입: " + type);
                 }
                 componentSpecs.add(spec);
             } catch (Exception e) {
@@ -232,11 +227,12 @@ public class DeploymentService {
     public void stopDeployment(Long projectId) {
         // 1. 프로젝트 조회
         Project project = projectRepository.findById(projectId)
-            .orElseThrow(ProjectNotFoundException::new);
+            .orElseThrow(() -> new CustomException(ErrorCode.PROJECT_NOT_FOUND));
 
         // TODO : 2. "실행 중인 배포" 조회 (명확한 상태 필터링 필요)
         Deployment deployment = deploymentRepository.findByProjectAndStatus(project, DeploymentStatus.RUNNING)
-            .orElseThrow(() -> new CustomException("실행 중인 배포가 없습니다.", HttpStatus.BAD_REQUEST));
+            .orElseThrow(() -> new CustomException(ErrorCode.INVALID_REQUEST, 
+            "실행 중인 배포가 없습니다."));
 
         String deploymentId = "deploy-" + projectId + "-" + deployment.getDeploymentId();
 
@@ -244,18 +240,20 @@ public class DeploymentService {
         List<Component> components = componentRepository.findByProject(project);
 
         if (components.isEmpty()) {
-            throw new CustomException("중단할 컴포넌트가 없습니다.", HttpStatus.BAD_REQUEST);
+            throw new CustomException(ErrorCode.INVALID_REQUEST, "중단할 컴포넌트가 없습니다.");
         }
 
         // 4. ComponentSpec 생성
         List<ComponentSpec> componentSpecs = new ArrayList<>();
         for (Component component : components) {
             ComponentSettingDocument settingDoc = componentSettingRepository.findByComponentId(component.getComponentId())
-                .orElseThrow(() -> new CustomException("설정 누락: " + component.getComponentId(), HttpStatus.BAD_REQUEST));
+                .orElseThrow(() -> new CustomException(ErrorCode.COMPONENT_NOT_FOUND, 
+                    "설정 누락: " + component.getComponentId()));
 
             try {
                 Credential credential = credentialRepository.findById(settingDoc.getCredentialId())
-                .orElseThrow(InvalidCredentialIdException::new);
+                    .orElseThrow(() -> new CustomException(ErrorCode.VAULT_SECRET_NOT_FOUND,
+                        "Credential ID " + settingDoc.getCredentialId() + "를 찾을 수 없습니다."));
 
                 JsonNode root = objectMapper.readTree(settingDoc.getSettingJson());
                 String type = root.path("type").asText();
@@ -291,12 +289,16 @@ public class DeploymentService {
                     case "MySQL" -> spec = ComponentSpec.newBuilder()
                         .setMySQL(convertToMySQL(root)).build();
         
-                    default -> throw new IllegalArgumentException("지원하지 않는 컴포넌트 타입: " + type);
+                    default -> throw new CustomException(ErrorCode.INVALID_REQUEST,
+                        "지원하지 않는 컴포넌트 타입: " + type);
                 }
         
                 componentSpecs.add(spec);
+            } catch (CustomException e) {
+                throw e;
             } catch (Exception e) {
-                throw new CustomException("설정 파싱 오류: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+                throw new CustomException(ErrorCode.JSON_PARSING_ERROR, 
+                    "설정 파싱 오류: " + e.getMessage(), e);
             }
         }
 
@@ -324,25 +326,30 @@ public class DeploymentService {
             deployment.markAsError(LocalDateTime.now());
             deploymentRepository.save(deployment);
 
-            throw new CustomException("배포 중단 실패: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+            throw new CustomException(ErrorCode.EXTERNAL_API_ERROR, 
+                "배포 중단 실패: " + e.getMessage(), e);
         }
     }
 
+    @Transactional(readOnly = true)
     public CheckDto checkDeploymentPreconditions(Long projectId) {
         // TODO: 사전 체크 로직 구현
         return null;
     }
 
+    @Transactional(readOnly = true)
     public ChargeEstimateDto planDeployment(Long projectId) {
         // TODO: 예상 요금 계산 로직 구현
         return null;
     }
 
+    @Transactional(readOnly = true)
     public ChargeResultDto getCharge(Long projectId) {
         // TODO: 실제 요금 조회 로직 구현
         return null;
     }
 
+    @Transactional(readOnly = true)
     public SseEmitter getDeploymentStatus(Long projectId) {
         // TODO: SSE로 상태 업데이트 전송
         SseEmitter emitter = new SseEmitter();
@@ -399,12 +406,14 @@ public class DeploymentService {
                     String keyText = gitNode.path("Key").asText();
     
                     if (idText == null || idText.isBlank()) {
-                        throw new CustomException("GitCredential ID가 비어 있습니다.", HttpStatus.BAD_REQUEST);
+                        throw new CustomException(ErrorCode.INVALID_REQUEST, 
+                            "GitCredential ID가 비어 있습니다.");
                     }
     
                     Long credentialId = Long.parseLong(idText);
                     Credential credential = credentialRepository.findById(credentialId)
-                        .orElseThrow(InvalidCredentialIdException::new);
+                        .orElseThrow(() -> new CustomException(ErrorCode.VAULT_SECRET_NOT_FOUND,
+                        "Credential ID " + credentialId + "를 찾을 수 없습니다."));
     
                     GitCredential gitCredential = GitCredential.newBuilder()
                         .setId(idText)
@@ -445,13 +454,17 @@ public class DeploymentService {
                     builder.setS3(s3);
                 }
     
-                default -> throw new IllegalArgumentException("지원하지 않는 컴포넌트 타입: " + type);
+                default -> throw new CustomException(ErrorCode.INVALID_REQUEST,
+                    "지원하지 않는 컴포넌트 타입: " + type);
             }
     
             return builder.build();
     
+        } catch (CustomException e) {
+            throw e;
         } catch (Exception e) {
-            throw new RuntimeException("gRPC ComponentSpec 변환 실패", e);
+            throw new CustomException(ErrorCode.JSON_PARSING_ERROR, 
+                "gRPC ComponentSpec 변환 실패: " + e.getMessage(), e);
         }
     }
     
@@ -460,87 +473,111 @@ public class DeploymentService {
         try {
             emitter.send(SseEmitter.event().name(eventName).data(data));
         } catch (IOException e) {
-            emitter.completeWithError(e);
+            emitter.completeWithError(new CustomException(ErrorCode.INTERNAL_SERVER_ERROR,
+                "SSE 전송 실패: " + e.getMessage(), e));
         }
     }
 
     private EC2Request convertToEC2(JsonNode root) {
         String rawComponentId = root.path("ComponentId").asText(); // main.tf.tpl에서 숫자 먼저 사용하지 않으려고
-
-        return EC2Request.newBuilder()
-            .setInstanceType(root.path("InstanceType").asText())
-            .setRegion(root.path("Region").asText())
-            .setAMI(root.path("AMI").asText())
-            .setInstanceName(root.path("InstanceName").asText())
-            .addAllOpenPorts(objectMapper.convertValue(
-                root.path("OpenPorts"), new TypeReference<List<Integer>>() {}))
-            .setAWSAccessKey(root.path("AWSAccessKey").asText())
-            .setAWSSecretKey(root.path("AWSSecretKey").asText())
-            .setComponentId("comp-" + rawComponentId) // main.tf.tpl에서 숫자 먼저 사용하지 않으려고
-            .build();
+        try {
+            return EC2Request.newBuilder()
+                .setInstanceType(root.path("InstanceType").asText())
+                .setRegion(root.path("Region").asText())
+                .setAMI(root.path("AMI").asText())
+                .setInstanceName(root.path("InstanceName").asText())
+                .addAllOpenPorts(objectMapper.convertValue(
+                    root.path("OpenPorts"), new TypeReference<List<Integer>>() {}))
+                .setAWSAccessKey(root.path("AWSAccessKey").asText())
+                .setAWSSecretKey(root.path("AWSSecretKey").asText())
+                .setComponentId("comp-" + rawComponentId) // main.tf.tpl에서 숫자 먼저 사용하지 않으려고
+                .build();
+        } catch (Exception e) {
+            throw new CustomException(ErrorCode.JSON_PARSING_ERROR, 
+                "EC2 설정 변환 실패: " + e.getMessage(), e);
+        }
     }
 
     private MySQLRequest convertToMySQL(JsonNode root) {
         String rawComponentId = root.path("ComponentId").asText();
-
-        return MySQLRequest.newBuilder()
-            .setMySQLRootPassword(root.path("MySQLRootPassword").asText())
-            .setMySQLDatabase(root.path("MySQLDatabase").asText())
-            .setMySQLUser(root.path("MySQLUser").asText())
-            .setMySQLPassword(root.path("MySQLPassword").asText())
-            .setPort(root.path("Port").asInt())
-            .setParentComponentId("comp-" + root.path("ParentComponentId").asText()) 
-            .setComponentId("comp-" + rawComponentId)  
-            .build();
+        try {
+            return MySQLRequest.newBuilder()
+                .setMySQLRootPassword(root.path("MySQLRootPassword").asText())
+                .setMySQLDatabase(root.path("MySQLDatabase").asText())
+                .setMySQLUser(root.path("MySQLUser").asText())
+                .setMySQLPassword(root.path("MySQLPassword").asText())
+                .setPort(root.path("Port").asInt())
+                .setParentComponentId("comp-" + root.path("ParentComponentId").asText()) 
+                .setComponentId("comp-" + rawComponentId)  
+                .build();
+        } catch (Exception e) {
+            throw new CustomException(ErrorCode.JSON_PARSING_ERROR, 
+                "MySQL 설정 변환 실패: " + e.getMessage(), e);
+        }
     }
     
     private S3Request convertToS3(JsonNode root) {
         String rawComponentId = root.path("ComponentId").asText();
         String deploymentId = root.path("DeploymentId").asText(); // 409 BucketAlreadyExists 해결, S3는 글로벌 고유 
 
-        return S3Request.newBuilder()
-            .setBucketName("pado-" + deploymentId + "-" + rawComponentId) // 409 BucketAlreadyExists 해결, S3는 글로벌 고유 
-            .setRegion(root.path("Region").asText())
-            .setAWSAccessKey(root.path("AWSAccessKey").asText())
-            .setAWSSecretKey(root.path("AWSSecretKey").asText())
-            .setComponentId("comp-" + rawComponentId) 
-            .build();
+        try {
+            return S3Request.newBuilder()
+                .setBucketName("pado-" + deploymentId + "-" + rawComponentId) // 409 BucketAlreadyExists 해결, S3는 글로벌 고유 
+                .setRegion(root.path("Region").asText())
+                .setAWSAccessKey(root.path("AWSAccessKey").asText())
+                .setAWSSecretKey(root.path("AWSSecretKey").asText())
+                .setComponentId("comp-" + rawComponentId) 
+                .build();
+        } catch (Exception e) {
+            throw new CustomException(ErrorCode.JSON_PARSING_ERROR, 
+                "S3 설정 변환 실패: " + e.getMessage(), e);
+        }
     }
     
     private SpringRequest convertToSpring(JsonNode root, Credential credential) {
         String rawComponentId = root.path("ComponentId").asText();
     
-        GitCredential gitCredential = GitCredential.newBuilder()
-            .setId(credential.getCredentialId().toString())
-            .setKey(credential.getCredentialData())
-            .build();
+        try {
+            GitCredential gitCredential = GitCredential.newBuilder()
+                .setId(credential.getCredentialId().toString())
+                .setKey(credential.getCredentialData())
+                .build();
     
-        return SpringRequest.newBuilder()
-            .setParentComponentId("comp-" + root.path("ParentComponentId").asText())
-            .setGitRepo(root.path("GitRepo").asText())
-            .setNginxPort(root.path("NginxPort").asInt())
-            .setBuildTool(root.path("BuildTool").asText())
-            .setJDKVersion(root.path("JDKVersion").asText())
-            .setDockerPort(root.path("DockerPort").asInt())
-            .setComponentId("comp-" + rawComponentId)
-            .setGitCredential(gitCredential)
-            .build();
+            return SpringRequest.newBuilder()
+                .setParentComponentId("comp-" + root.path("ParentComponentId").asText())
+                .setGitRepo(root.path("GitRepo").asText())
+                .setNginxPort(root.path("NginxPort").asInt())
+                .setBuildTool(root.path("BuildTool").asText())
+                .setJDKVersion(root.path("JDKVersion").asText())
+                .setDockerPort(root.path("DockerPort").asInt())
+                .setComponentId("comp-" + rawComponentId)
+                .setGitCredential(gitCredential)
+                .build();
+        } catch (Exception e) {
+            throw new CustomException(ErrorCode.JSON_PARSING_ERROR, 
+                "Spring 설정 변환 실패: " + e.getMessage(), e);
+        }
     }
     
     private ReactRequest convertToReact(JsonNode root, Credential credential) {
         String rawComponentId = root.path("ComponentId").asText();
 
-        GitCredential gitCredential = GitCredential.newBuilder()
-            .setId(credential.getCredentialId().toString())
-            .setKey(credential.getCredentialData())
-            .build();
+        try {
+            GitCredential gitCredential = GitCredential.newBuilder()
+                .setId(credential.getCredentialId().toString())
+                .setKey(credential.getCredentialData())
+                .build();
     
-        return ReactRequest.newBuilder()
-            .setParentComponentId("comp-" + root.path("ParentComponentId").asText())
-            .setGitRepo(root.path("GitRepo").asText())
-            .setComponentId("comp-" + rawComponentId)
-            .setGitCredential(gitCredential)
-            .build();
+            return ReactRequest.newBuilder()
+                .setParentComponentId("comp-" + root.path("ParentComponentId").asText())
+                .setGitRepo(root.path("GitRepo").asText())
+                .setComponentId("comp-" + rawComponentId)
+                .setGitCredential(gitCredential)
+                .build();
+        } catch (Exception e) {
+            throw new CustomException(ErrorCode.JSON_PARSING_ERROR, 
+                "React 설정 변환 실패: " + e.getMessage(), e);
+        }
     }
     
 }

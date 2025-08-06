@@ -18,7 +18,12 @@ public class JwtUtil {
     @Value("${jwt.secret}")
     private String secret;
 
-    @Value("${jwt.access-token-expiration:3600000}")  // 기본 1시간 (1000 * 60 * 60)
+    // TODO : 운영 환경에서는 액세스 토큰의 만료 시간을 짧게 둘 것
+    // @Value("${jwt.access-token-expiration:3600000}")  // 기본 1시간 (1000 * 60 * 60) -> 5~15분으로 변경
+    // private long accessTokenExpiration;
+
+    // 개발환경에서는 24시간으로 해둘 것 
+    @Value("${jwt.access-token-expiration:86400000}")  // 24시간 (1000 * 60 * 60 * 24) 
     private long accessTokenExpiration;
 
     @Value("${jwt.refresh-token-expiration:604800000}")  // 기본 7일 (1000 * 60 * 60 * 24 * 7)
